@@ -1,0 +1,16 @@
+services:
+  feeder:
+    build: .
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - DISABLE_TELEMETRY=1
+      - MAX_JOBS_PER_LOOP=1
+      - WORKER_POLL_INTERVAL_MS=30000
+      - DEFAULT_CONCURRENCY=1
+      - SCRAPER_IMAGE=gosom/google-maps-scraper
+      - SCRAPER_TIMEOUT_MS=300000
+    volumes:
+      # Mount Docker socket so the worker can run scraper containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./tmp:/app/tmp
+    restart: unless-stopped

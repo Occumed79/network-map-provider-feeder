@@ -1,0 +1,22 @@
+services:
+  - type: worker
+    name: network-map-provider-feeder
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm run worker
+    envVars:
+      - key: DISABLE_TELEMETRY
+        value: "1"
+      - key: MAX_JOBS_PER_LOOP
+        value: "1"
+      - key: WORKER_POLL_INTERVAL_MS
+        value: "30000"
+      - key: DEFAULT_CONCURRENCY
+        value: "1"
+      - key: SCRAPER_IMAGE
+        value: "gosom/google-maps-scraper"
+      - key: SCRAPER_TIMEOUT_MS
+        value: "300000"
+      - key: DATABASE_URL
+        sync: false  # Set manually in Render dashboard
+    plan: starter
