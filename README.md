@@ -23,9 +23,10 @@ This service continuously claims provider search jobs, runs parallel mapped-sour
 6. Runs enabled mapped sources in parallel for each job.
 7. Merges/dedupes source results.
 8. Writes raw rows to `google_maps_raw_results`.
-9. Writes normalized rows to `provider_feeder_candidates`.
+9. Writes normalized staging/dedupe rows to `provider_feeder_candidates`.
 10. Links candidate/source rows in `provider_feeder_candidate_sources`.
-11. Records run history in `provider_feeder_runs`.
+11. Safely upserts final app-facing rows into `provider_candidates` when enabled and available.
+12. Records run history in `provider_feeder_runs`.
 
 ## Architecture
 
@@ -39,24 +40,23 @@ Render web service
        ├─ Google Maps HTTP lookup
        ├─ Apple Maps HTTP lookup
        ├─ google_maps_raw_results
-       ├─ provider_feeder_candidates
+       ├─ provider_feeder_candidates (staging/dedupe)
        ├─ provider_feeder_candidate_sources
+       ├─ provider_candidates (final app-facing output)
        └─ provider_feeder_runs
 ```
 
 ## Neon schema guardrail
 
-This repo treats Neon as the source of truth.
+This repo treats Neon as the source of truth for app-facing tables and never hardcodes or mutates the final `provider_candidates` schema. Feeder-owned schema bootstrap is enabled by default for the queue/raw/staging/run tables, and startup validation confirms those feeder tables are present before polling.
 
-Normal startup is read-only for schema. It validates that the required feeder tables already exist, but it does not create tables, add columns, add indexes, or alter constraints.
-
-Required tables:
+Required feeder-owned tables:
 
 | Table | Purpose |
 |---|---|
 | `provider_feeder_jobs` | Queue of mapped-source search jobs. |
 | `google_maps_raw_results` | Raw mapped-source rows captured per job. |
-| `provider_feeder_candidates` | Normalized/deduped provider candidates owned by this feeder. |
+| `provider_feeder_candidates` | Normalized/deduped staging candidates owned by this feeder; not final app output. |
 | `provider_feeder_candidate_sources` | Links candidates to raw source rows and jobs. |
 | `provider_feeder_runs` | Run history for each claimed job. |
 
@@ -73,7 +73,7 @@ Open the Render service URL directly.
 | `/healthz` | Machine-readable health check. |
 | `/status` | Machine-readable status check. |
 
-The dashboard shows job counts, raw result counts, candidate counts, source counts, recent jobs, recent candidates, recent errors, and current worker status.
+The dashboard shows final app candidate counts separately from feeder staging counts, raw mapped result counts, current mapped-source counts, legacy source counts, recent jobs, recent app candidates, recent staging candidates, separated legacy errors, and current worker status.
 
 ## Environment variables
 
@@ -88,7 +88,11 @@ The dashboard shows job counts, raw result counts, candidate counts, source coun
 | `MAX_RESULTS_PER_JOB` | `120` | Max merged results written per job. |
 | `MAX_JOBS_PER_LOOP` | `1` | Jobs claimed per worker loop. |
 | `DEFAULT_CONCURRENCY` | `1` | Kept for compatibility; current mapped HTTP path runs sources in parallel per job. |
+| `ENABLE_SCHEMA_BOOTSTRAP` | `1` | Create/maintain feeder-owned tables when enabled. |
 | `VALIDATE_SCHEMA_ON_START` | `1` | Validate required feeder tables before polling. |
+| `ENABLE_APP_CANDIDATE_WRITE` | `1` | Upsert final app-facing candidates into `APP_CANDIDATE_TABLE`. |
+| `APP_CANDIDATE_TABLE` | `provider_candidates` | Final app-facing provider candidate table; inspected dynamically. |
+| `DASHBOARD_SHOW_LEGACY` | `0` | Show legacy errors separately when enabled; source counts are always separated. |
 | `AUTO_SEED_ON_START` | `1` | Seed backlog jobs when active queue is low. |
 | `MIN_PENDING_JOBS` | `25` | Minimum pending/running jobs before auto-seeding more. |
 | `MAX_AUTO_SEED_JOBS` | `250` | Max jobs inserted during one auto-seed pass. |
@@ -162,3 +166,55 @@ LIMIT 25;
 ## Scope
 
 This is a controlled continuous feeder. It does not scrape every business on the internet. It creates targeted occupational-health search jobs, runs mapped sources in parallel, and grows the database job by job so Network Map can consume cleaner provider candidates later.
+
+## Final provider output and dashboard data separation
+
+The live feeder flow is intentionally:
+
+```text
+Bing Maps / Google Maps / Apple Maps HTTP sources
+→ google_maps_raw_results (raw mapped rows)
+→ provider_feeder_candidates (feeder-owned staging/dedupe)
+→ provider_candidates (final app-facing provider candidates)
+```
+
+`provider_feeder_candidates` is not the final application table. It is staging/dedupe only. Final writes are controlled by:
+
+```env
+ENABLE_APP_CANDIDATE_WRITE=1
+APP_CANDIDATE_TABLE=provider_candidates
+```
+
+The app candidate writer validates `APP_CANDIDATE_TABLE` as a strict SQL identifier, checks `to_regclass`, inspects columns dynamically through `information_schema.columns`, and writes only fields that exist. If `provider_candidates` is missing or has an unexpected schema, the worker logs a warning and continues raw/staging writes.
+
+Render may have manual dashboard environment-variable overrides that take precedence over values in `render.yaml`. If logs show `autoSeed: false`, verify the Render service Environment tab does not override `AUTO_SEED_ON_START`; `render.yaml` keeps `AUTO_SEED_ON_START=1`.
+
+### Dashboard semantics
+
+The dashboard separates:
+
+- **App Candidates**: final app-facing rows from `provider_candidates` when that table exists.
+- **Feeder Staging**: staging/dedupe rows from `provider_feeder_candidates`.
+- **Raw Mapped Results**: raw source rows from `google_maps_raw_results`.
+- **Current Source Counts**: only `bing_maps_http`, `google_maps_http`, and `apple_maps_http`.
+- **Legacy Source Counts**: older or dirty sources such as `npi_registry` and `unknown`; these are never mixed into current mapped-source counts.
+
+Set `DASHBOARD_SHOW_LEGACY=1` to show legacy errors separately. Legacy rows are not deleted automatically.
+
+### Inspecting legacy rows manually
+
+```sql
+SELECT COALESCE(raw->>'source', 'unknown') AS source, count(*)
+FROM google_maps_raw_results
+WHERE COALESCE(raw->>'source', 'unknown') NOT IN ('bing_maps_http','google_maps_http','apple_maps_http')
+GROUP BY 1
+ORDER BY count(*) DESC;
+
+SELECT id, query, status, error, completed_at
+FROM provider_feeder_jobs
+WHERE error ILIKE '%google-maps-scraper binary exited%'
+ORDER BY COALESCE(completed_at, started_at, created_at) DESC
+LIMIT 50;
+```
+
+The feeder remains lightweight HTTP mapped-source only: no Playwright, no gosom, no NPI Registry, no RapidAPI, and no local Docker requirement for validation.
