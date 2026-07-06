@@ -4,23 +4,25 @@ services:
     runtime: docker
     plan: standard
     branch: main
-    
-    # Environment variables
     envVars:
       - key: NODE_ENV
         value: production
-      - key: SCRAPER_MODE
-        value: binary
-      - key: SCRAPER_BINARY
-        value: google-maps-scraper
+      - key: FREE_ONLY_MODE
+        value: 1
+      - key: SCRAPER_PROVIDER
+        value: bing_maps_http
+      - key: MAP_SOURCE
+        value: bing
+      - key: ENABLE_MAP_SOURCE_FALLBACK
+        value: 1
+      - key: MAP_HTTP_TIMEOUT_MS
+        value: 30000
+      - key: MAP_HTTP_REQUEST_DELAY_MS
+        value: 750
+      - key: MAX_RESULTS_PER_JOB
+        value: 40
       - key: DISABLE_TELEMETRY
         value: 1
-      - key: PLAYWRIGHT_BROWSERS_PATH
-        value: /opt/browsers
-      - key: PLAYWRIGHT_DRIVER_PATH
-        value: /opt/ms-playwright-go/1.57.0
-      - key: PLAYWRIGHT_NODEJS_PATH
-        value: /usr/bin/node
       - key: VALIDATE_SCHEMA_ON_START
         value: 1
       - key: AUTO_SEED_ON_START
@@ -41,14 +43,8 @@ services:
         fromDatabase:
           name: network-map-postgres
           property: connectionString
-    
-    # Health check (worker will exit if job polling fails)
     healthCheckPath: /health
     healthCheckTimeout: 300
-    
-    # Resource allocation
     numInstances: 1
-    
-    # Build configuration
     dockerfile: ./Dockerfile
     dockerCommand: npm run worker

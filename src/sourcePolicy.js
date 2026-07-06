@@ -1,7 +1,14 @@
 import { logger } from "./logger.js";
 
-const DEFAULT_PROVIDER = "free_google_maps_scraper";
-const ALLOWED_FREE_PROVIDERS = new Set([DEFAULT_PROVIDER, "google_maps_scraper", "gosom_google_maps_scraper"]);
+const DEFAULT_PROVIDER = "bing_maps_http";
+const ALLOWED_MAP_PROVIDERS = new Set([
+  DEFAULT_PROVIDER,
+  "google_maps_http",
+  "apple_maps_http",
+  "free_google_maps_scraper",
+  "google_maps_scraper",
+  "gosom_google_maps_scraper",
+]);
 
 export function enforceSourcePolicy() {
   const freeOnlyMode = process.env.FREE_ONLY_MODE !== "0";
@@ -12,11 +19,11 @@ export function enforceSourcePolicy() {
     return;
   }
 
-  if (!ALLOWED_FREE_PROVIDERS.has(provider)) {
+  if (!ALLOWED_MAP_PROVIDERS.has(provider)) {
     throw new Error(
-      `Free-only source policy failed. Unsupported provider '${provider}'. Allowed providers: ${[...ALLOWED_FREE_PROVIDERS].join(", ")}`
+      `Mapped-source policy failed. Unsupported provider '${provider}'. Allowed providers: ${[...ALLOWED_MAP_PROVIDERS].join(", ")}`
     );
   }
 
-  logger.info("Free-only source policy passed", { provider });
+  logger.info("Mapped-source policy passed", { provider });
 }
