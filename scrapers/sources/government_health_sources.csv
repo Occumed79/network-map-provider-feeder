@@ -1,0 +1,100 @@
+country,sourceTag,url,allowedDomain,crawlMode,enabled,notes
+Algeria,gov_health_algeria,https://www.sante.gov.dz/,www.sante.gov.dz,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Bahamas,gov_health_bahamas,https://www.bahamas.gov.bs/wps/portal/public/gov/government/ministries/ministry%20of%20health%20and%20wellness/,www.bahamas.gov.bs,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Bahrain,gov_health_bahrain,https://www.nhra.bh/Departments/HFR/?page=159,www.nhra.bh,facility_registry,False,Direct facility/provider registry candidate
+Barbados,gov_health_barbados,https://www.health.gov.bb/Healthcare-Locator,www.health.gov.bb,facility_registry,False,Direct facility/provider registry candidate
+Belarus,gov_health_belarus,https://minzdrav.gov.by/,minzdrav.gov.by,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Belize,gov_health_belize,https://www.health.gov.bz/,www.health.gov.bz,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Benin,gov_health_benin,https://www.sante.gouv.bj/,www.sante.gouv.bj,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Bhutan,gov_health_bhutan,https://www.moh.gov.bt/,www.moh.gov.bt,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Bolivia,gov_health_bolivia,https://www.minsalud.gob.bo/,www.minsalud.gob.bo,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Bosnia and Herzegovina,gov_health_bosnia-and-herzegovina,https://www.fmoh.gov.ba/,www.fmoh.gov.ba,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Botswana,gov_health_botswana,https://www.moh.gov.bw/,www.moh.gov.bw,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Brunei,gov_health_brunei,https://www.moh.gov.bn/,www.moh.gov.bn,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Bulgaria,gov_health_bulgaria,https://www.mh.government.bg/,www.mh.government.bg,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Burundi,gov_health_burundi,https://www.minisante.bi/,www.minisante.bi,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+China,gov_health_china,http://www.nhc.gov.cn/,www.nhc.gov.cn,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Comoros,gov_health_comoros,https://sante.gouv.km/,sante.gouv.km,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Costa Rica,gov_health_costa-rica,https://www.ccss.sa.cr/centros-de-salud,www.ccss.sa.cr,facility_registry,False,Direct facility/provider registry candidate
+Djibouti,gov_health_djibouti,https://sante.gouv.dj/,sante.gouv.dj,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Dominican Republic,gov_health_dominican-republic,https://www.msp.gob.do/,www.msp.gob.do,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Egypt,gov_health_egypt,https://www.mohp.gov.eg/,www.mohp.gov.eg,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+El Salvador,gov_health_el-salvador,https://www.salud.gob.sv/,www.salud.gob.sv,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Equatorial Guinea,gov_health_equatorial-guinea,https://minsanidad.gob.gq/,minsanidad.gob.gq,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Eritrea,gov_health_eritrea,https://shabait.com/category/ministry-of-health/,shabait.com,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Estonia,gov_health_estonia,https://www.terviseamet.ee/en,www.terviseamet.ee,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Eswatini,gov_health_eswatini,https://www.gov.sz/index.php/ministries-departments/ministry-of-health,www.gov.sz,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Ethiopia,gov_health_ethiopia,https://www.moh.gov.et/,www.moh.gov.et,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Finland,gov_health_finland,https://julkiterhikki.valvira.fi/,julkiterhikki.valvira.fi,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Gabon,gov_health_gabon,https://sante.gouv.ga/,sante.gouv.ga,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Gambia,gov_health_gambia,https://moh.gov.gm/,moh.gov.gm,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Georgia,gov_health_georgia,https://www.moh.gov.ge/,www.moh.gov.ge,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Ghana,gov_health_ghana,https://hefra.gov.gh/facility-register/,hefra.gov.gh,facility_registry,False,Direct facility/provider registry candidate
+Greece,gov_health_greece,https://www.moh.gov.gr/,www.moh.gov.gr,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Grenada,gov_health_grenada,https://www.gov.gd/ministries/ministry-of-health,www.gov.gd,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Guinea,gov_health_guinea,https://www.sante.gov.gn/,www.sante.gov.gn,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Guinea-Bissau,gov_health_guinea-bissau,https://www.gov.gw/,www.gov.gw,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Honduras,gov_health_honduras,https://www.salud.gob.hn/,www.salud.gob.hn,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Iraq,gov_health_iraq,https://moh.gov.iq/,moh.gov.iq,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Kazakhstan,gov_health_kazakhstan,https://www.gov.kz/memleket/entities/dsm?lang=en,www.gov.kz,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Kiribati,gov_health_kiribati,https://www.mhms.gov.ki/,www.mhms.gov.ki,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Kyrgyzstan,gov_health_kyrgyzstan,https://med.kg/,med.kg,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Laos,gov_health_laos,https://moh.gov.la/,moh.gov.la,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Libya,gov_health_libya,https://www.health.gov.ly/,www.health.gov.ly,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Madagascar,gov_health_madagascar,https://www.sante.gov.mg/,www.sante.gov.mg,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Malawi,gov_health_malawi,https://www.health.gov.mw/,www.health.gov.mw,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Malaysia,gov_health_malaysia,https://www.mmc.gov.my/medical-register,www.mmc.gov.my,facility_registry,False,Direct facility/provider registry candidate
+Maldives,gov_health_maldives,https://health.gov.mv/,health.gov.mv,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Mali,gov_health_mali,https://www.sante.gov.ml/,www.sante.gov.ml,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Malta,gov_health_malta,https://deputyprimeminister.gov.mt/en/health-services/Pages/default.aspx,deputyprimeminister.gov.mt,facility_registry,False,Direct facility/provider registry candidate
+Marshall Islands,gov_health_marshall-islands,https://rmihealth.org/,rmihealth.org,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Mauritania,gov_health_mauritania,https://www.sante.gov.mr/,www.sante.gov.mr,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Mauritius,gov_health_mauritius,https://health.govmu.org/,health.govmu.org,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Mexico,gov_health_mexico,https://www.dgis.salud.gob.mx/contenidos/intercambio/clues_gobmx.html,www.dgis.salud.gob.mx,facility_registry,False,Direct facility/provider registry candidate
+"Micronesia, Federated States of",gov_health_micronesia-federated-states-of,https://hsa.gov.fm/,hsa.gov.fm,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Moldova,gov_health_moldova,https://ms.gov.md/,ms.gov.md,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Monaco,gov_health_monaco,https://www.gouv.mc/Gouvernement-et-Institutions/Le-Gouvernement/Departement-des-Affaires-Sociales-et-de-la-Sante/Direction-de-l-Action-Sanitaire,www.gouv.mc,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Mongolia,gov_health_mongolia,https://moh.gov.mn/,moh.gov.mn,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Montenegro,gov_health_montenegro,https://www.gov.me/mzd,www.gov.me,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Morocco,gov_health_morocco,https://cartesanitaire.sante.gov.ma/,cartesanitaire.sante.gov.ma,facility_registry,False,Direct facility/provider registry candidate
+Mozambique,gov_health_mozambique,https://www.misau.gov.mz/,www.misau.gov.mz,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Myanmar,gov_health_myanmar,https://mohs.gov.mm/,mohs.gov.mm,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Niger,gov_health_niger,https://www.sante.gouv.ne/,www.sante.gouv.ne,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+North Korea,gov_health_north-korea,http://moph.gov.kp/,moph.gov.kp,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Norway,gov_health_norway,https://www.helsenorge.no/en/health-services/,www.helsenorge.no,facility_registry,False,Direct facility/provider registry candidate
+Palau,gov_health_palau,https://www.moh.gov.pw/,www.moh.gov.pw,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Paraguay,gov_health_paraguay,https://www.mspbs.gov.py/,www.mspbs.gov.py,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Peru,gov_health_peru,https://renipress.susalud.gob.pe/,renipress.susalud.gob.pe,facility_registry,False,Direct facility/provider registry candidate
+Philippines,gov_health_philippines,https://nhfr.doh.gov.ph/,nhfr.doh.gov.ph,facility_registry,False,Direct facility/provider registry candidate
+Portugal,gov_health_portugal,https://www.ers.pt/pt/prestadores/pesquisa-de-prestadores/,www.ers.pt,facility_registry,False,Direct facility/provider registry candidate
+Qatar,gov_health_qatar,https://www.moph.gov.qa/english/OurServices/eservices/Pages/Health-Facilities.aspx,www.moph.gov.qa,facility_registry,False,Direct facility/provider registry candidate
+Romania,gov_health_romania,https://www.ms.ro/,www.ms.ro,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Russia,gov_health_russia,https://minzdrav.gov.ru/,minzdrav.gov.ru,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Rwanda,gov_health_rwanda,https://www.moh.gov.rw/,www.moh.gov.rw,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Saint Kitts and Nevis,gov_health_saint-kitts-and-nevis,https://www.gov.kn/ministries/ministry-of-health/,www.gov.kn,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Saint Lucia,gov_health_saint-lucia,https://www.govt.lc/ministries/health-wellness-and-elderly-affairs,www.govt.lc,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Saint Vincent and the Grenadines,gov_health_saint-vincent-and-the-grenadines,https://health.gov.vc/health/,health.gov.vc,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Samoa,gov_health_samoa,https://www.health.gov.ws/,www.health.gov.ws,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+San Marino,gov_health_san-marino,https://www.iss.sm/,www.iss.sm,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+São Tomé and Príncipe,gov_health_s-o-tom-and-pr-ncipe,https://www.ms.gov.st/,www.ms.gov.st,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Sierra Leone,gov_health_sierra-leone,https://mohs.gov.sl/,mohs.gov.sl,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Solomon Islands,gov_health_solomon-islands,https://solomons.gov.sb/ministry-of-health-medical-services/,solomons.gov.sb,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Somalia,gov_health_somalia,https://moh.gov.so/,moh.gov.so,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+South Africa,gov_health_south-africa,https://hpcsa.co.za/,hpcsa.co.za,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+South Sudan,gov_health_south-sudan,https://moh.gov.ss/,moh.gov.ss,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Spain,gov_health_spain,https://regcess.sanidad.gob.es/,regcess.sanidad.gob.es,facility_registry,False,Direct facility/provider registry candidate
+Sudan,gov_health_sudan,https://fmoh.gov.sd/,fmoh.gov.sd,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Suriname,gov_health_suriname,https://health.gov.sr/,health.gov.sr,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Switzerland,gov_health_switzerland,https://www.medregom.admin.ch/,www.medregom.admin.ch,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Syria,gov_health_syria,https://www.moh.gov.sy/,www.moh.gov.sy,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Tajikistan,gov_health_tajikistan,https://moh.tj/,moh.tj,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Thailand,gov_health_thailand,https://gishealth.moph.go.th/healthmap/,gishealth.moph.go.th,facility_registry,False,Direct facility/provider registry candidate
+Timor-Leste,gov_health_timor-leste,https://www.msa.gov.tl/,www.msa.gov.tl,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Togo,gov_health_togo,https://sante.gouv.tg/,sante.gouv.tg,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Trinidad and Tobago,gov_health_trinidad-and-tobago,https://health.gov.tt/services/regional-health-authorities,health.gov.tt,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Tunisia,gov_health_tunisia,http://www.santetunisie.rns.tn/,www.santetunisie.rns.tn,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Turkmenistan,gov_health_turkmenistan,https://www.saglykhm.gov.tm/,www.saglykhm.gov.tm,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Tuvalu,gov_health_tuvalu,https://tuvalu.tv/tuvalu-government/ministries/ministry-of-health-social-welfare-and-gender-affairs/,tuvalu.tv,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Vatican City,gov_health_vatican-city,https://www.vaticanstate.va/en/services/health-and-hygiene-directorate.html,www.vaticanstate.va,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Venezuela,gov_health_venezuela,http://www.mpps.gob.ve/,www.mpps.gob.ve,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
+Yemen,gov_health_yemen,https://moh.gov.ye/,moh.gov.ye,authority_discovery,False,Official health authority page; needs discovery or country-specific extraction config before import
