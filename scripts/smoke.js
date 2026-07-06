@@ -4,15 +4,14 @@ import { logger } from "../src/logger.js";
 const REQUIRED_TABLES = [
   "provider_feeder_jobs",
   "google_maps_raw_results",
-  "provider_candidates",
-  "provider_candidate_sources",
+  "provider_feeder_candidates",
+  "provider_feeder_candidate_sources",
   "provider_feeder_runs",
 ];
 
 async function smoke() {
   let allPassed = true;
 
-  // 1. Database connectivity
   try {
     const { rows } = await query("SELECT now() AS now, version() AS version");
     logger.info("Database connected", {
@@ -24,12 +23,9 @@ async function smoke() {
     allPassed = false;
   }
 
-  // 2. Table existence
   for (const table of REQUIRED_TABLES) {
     try {
-      const { rows } = await query(
-        `SELECT to_regclass('public.${table}') AS exists`
-      );
+      const { rows } = await query("SELECT to_regclass($1) AS exists", [`public.${table}`]);
       if (rows[0].exists) {
         logger.info(`Table OK: ${table}`);
       } else {
@@ -42,7 +38,6 @@ async function smoke() {
     }
   }
 
-  // 3. Row counts
   if (allPassed) {
     for (const table of REQUIRED_TABLES) {
       try {
@@ -57,10 +52,10 @@ async function smoke() {
   await end();
 
   if (allPassed) {
-    logger.info("Smoke test PASSED ✓");
+    logger.info("Smoke test PASSED");
     process.exit(0);
   } else {
-    logger.error("Smoke test FAILED ✗");
+    logger.error("Smoke test FAILED");
     process.exit(1);
   }
 }

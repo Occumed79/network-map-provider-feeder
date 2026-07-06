@@ -1,3 +1,4 @@
+import { createServer } from "http";
 import { query, withTransaction, end } from "./db.js";
 import { runScraper } from "./scraper.js";
 import { logger } from "./logger.js";
@@ -22,6 +23,38 @@ const AUTO_SEED_ON_START = process.env.AUTO_SEED_ON_START === "1";
 const MIN_PENDING_JOBS = parseInt(process.env.MIN_PENDING_JOBS || "25", 10);
 const MAX_AUTO_SEED_JOBS = parseInt(process.env.MAX_AUTO_SEED_JOBS || "250", 10);
 const RESET_STALE_RUNNING_MINUTES = parseInt(process.env.RESET_STALE_RUNNING_MINUTES || "120", 10);
+
+const health = {
+  startedAt: new Date().toISOString(),
+  ready: false,
+  status: "starting",
+  lastLoopAt: null,
+  lastJobAt: null,
+  lastJobId: null,
+  lastError: null,
+};
+
+function startHealthServer() {
+  const port = parseInt(process.env.PORT || "0", 10);
+  if (!port) return null;
+
+  const server = createServer((req, res) => {
+    const path = req.url?.split("?")[0] || "/";
+    if (!["/", "/health", "/healthz", "/status"].includes(path)) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "not_found" }));
+      return;
+    }
+
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, service: "network-map-provider-feeder", ...health }));
+  });
+
+  server.listen(port, "0.0.0.0", () => {
+    logger.info("Health server listening", { port });
+  });
+  return server;
+}
 
 async function resetStaleRunningJobs() {
   const { rows } = await query(
@@ -216,6 +249,9 @@ async function normalizeAndUpsertCandidates(client, jobId, job, rawRows) {
 
 async function processJob(job) {
   logger.info("Processing job", { jobId: job.id, query: job.query, attempt: job.attempts });
+  health.lastJobAt = new Date().toISOString();
+  health.lastJobId = job.id;
+
   const { rows: runRows } = await query(
     `INSERT INTO provider_feeder_runs (job_id, status) VALUES ($1::bigint, 'running') RETURNING id`,
     [job.id]
@@ -230,6 +266,9 @@ async function processJob(job) {
       geo: job.target_lat != null && job.target_lng != null ? { lat: job.target_lat, lng: job.target_lng } : null,
       radiusMeters: job.radius_meters || null,
       fastMode: Boolean(job.scraper_fast_mode),
+      serviceLine: job.service_line || null,
+      countryCode: job.country_code || "US",
+      regionName: job.region_name || null,
     });
 
     const result = await withTransaction(async (client) => {
@@ -245,9 +284,11 @@ async function processJob(job) {
        WHERE id = $3::bigint`,
       [result.rawCount, result.candidateCount, runId]
     );
+    health.lastError = null;
     logger.info("Job completed", { jobId: job.id, rawCount: result.rawCount, candidateCount: result.candidateCount });
   } catch (err) {
     logger.error("Job failed", { jobId: job.id, error: err.message });
+    health.lastError = err.message;
     const shouldFail = job.attempts >= job.max_attempts;
     const nextStatus = shouldFail ? "failed" : "pending";
     await query(
@@ -275,28 +316,35 @@ async function maybeSeedBacklog() {
 }
 
 async function main() {
+  const healthServer = startHealthServer();
   logger.info("Worker starting", {
     pollInterval: POLL_INTERVAL,
     maxJobsPerLoop: MAX_JOBS_PER_LOOP,
     concurrency: DEFAULT_CONCURRENCY,
     validateSchema: VALIDATE_SCHEMA_ON_START,
     autoSeed: AUTO_SEED_ON_START,
+    healthServer: Boolean(healthServer),
   });
 
   if (VALIDATE_SCHEMA_ON_START) await validateSchema();
   await resetStaleRunningJobs();
   await maybeSeedBacklog();
+  health.ready = true;
+  health.status = "running";
 
   let running = true;
   const shutdown = () => {
     logger.info("Shutting down worker...");
+    health.status = "stopping";
     running = false;
+    if (healthServer) healthServer.close();
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
   while (running) {
     try {
+      health.lastLoopAt = new Date().toISOString();
       const jobs = await claimJobs(MAX_JOBS_PER_LOOP);
       if (!jobs.length) {
         await maybeSeedBacklog();
@@ -308,6 +356,7 @@ async function main() {
         await processJob(job);
       }
     } catch (err) {
+      health.lastError = err.message;
       logger.error("Worker loop error", { error: err.message });
       await new Promise((r) => setTimeout(r, POLL_INTERVAL));
     }
@@ -318,6 +367,8 @@ async function main() {
 }
 
 main().catch((err) => {
+  health.status = "fatal";
+  health.lastError = err.message;
   logger.error("Fatal worker error", { error: err.message });
   process.exit(1);
 });
