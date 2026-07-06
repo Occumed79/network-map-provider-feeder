@@ -29,34 +29,40 @@ class GovernmentHealthDiscoverySpider(scrapy.Spider):
 
     def __init__(self, source_file="sources/government_health_sources.csv", countries="", max_depth="1", max_pages_per_country="20", *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.source_file = Path(source_file)
-        if not self.source_file.is_absolute():
-            self.source_file = Path.cwd() / self.source_file
-        if not self.source_file.exists():
-            raise ValueError(f"source_file not found: {self.source_file}")
+        self.source_file = source_file
+        source_files = ["sources/government_health_sources.csv", "sources/government_health_sources_part2.csv"] if source_file == "all" else [source_file]
+        resolved_files = []
+        for item in source_files:
+            p = Path(item)
+            if not p.is_absolute():
+                p = Path.cwd() / p
+            if not p.exists():
+                raise ValueError(f"source_file not found: {p}")
+            resolved_files.append(p)
         wanted = {c.strip().lower() for c in countries.split(",") if c.strip()}
         self.max_depth = int(max_depth)
         self.max_pages_per_country = int(max_pages_per_country)
         self.page_counts = {}
         self.sources = []
-        with self.source_file.open("r", encoding="utf-8-sig", newline="") as f:
-            for row in csv.DictReader(f):
-                country = (row.get("country") or "").strip()
-                url = (row.get("url") or "").strip()
-                enabled = str(row.get("enabled", "true")).strip().lower()
-                if enabled in {"0", "false", "no"} and not wanted:
-                    continue
-                if not country or not url:
-                    continue
-                if wanted and country.lower() not in wanted:
-                    continue
-                self.sources.append({
-                    "country": country,
-                    "sourceTag": (row.get("sourceTag") or self.slug(country)).strip(),
-                    "url": url,
-                    "crawlMode": (row.get("crawlMode") or "authority_discovery").strip(),
-                    "notes": (row.get("notes") or "").strip(),
-                })
+        for source_path in resolved_files:
+            with source_path.open("r", encoding="utf-8-sig", newline="") as f:
+                for row in csv.DictReader(f):
+                    country = (row.get("country") or "").strip()
+                    url = (row.get("url") or "").strip()
+                    # Manual discovery intentionally treats the seed lists as operator-supplied leads.
+                    # Keep disabled rows discoverable here so the frontend All/Part 1/Part 2 controls
+                    # can exercise both government-health source batches without editing CSV flags.
+                    if not country or not url:
+                        continue
+                    if wanted and country.lower() not in wanted:
+                        continue
+                    self.sources.append({
+                        "country": country,
+                        "sourceTag": (row.get("sourceTag") or self.slug(country)).strip(),
+                        "url": url,
+                        "crawlMode": (row.get("crawlMode") or "authority_discovery").strip(),
+                        "notes": (row.get("notes") or "").strip(),
+                    })
         self.allowed_domains = sorted({urlparse(s["url"]).hostname or "" for s in self.sources if urlparse(s["url"]).hostname})
 
     def start_requests(self):
@@ -107,6 +113,7 @@ class GovernmentHealthDiscoverySpider(scrapy.Spider):
             "anchor_text": anchor_text,
             "match_reasons": "; ".join(reasons[:8]),
             "notes": source.get("notes", ""),
+            "sourceType": "government_health_discovery",
         }
 
     def matches(self, text):

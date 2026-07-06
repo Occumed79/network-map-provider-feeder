@@ -28,7 +28,8 @@ function startHealthServer() {
     try {
       const result = await handleDashboardRequest(req, health);
       res.writeHead(result.statusCode, result.headers);
-      res.end(result.body);
+      if (result.body && typeof result.body.pipe === "function") result.body.pipe(res);
+      else res.end(result.body);
     } catch (err) {
       res.writeHead(500, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
       res.end(JSON.stringify({ ok: false, error: err.message }));
