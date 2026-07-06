@@ -1,357 +1,143 @@
-import argparse
-import csv
-import json
-import re
-import sys
+import argparse, csv, json, re, sys
+from collections import Counter
 from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-SCRAPERS = ROOT / "scrapers"
-if str(SCRAPERS) not in sys.path:
-    sys.path.insert(0, str(SCRAPERS))
-
+ROOT=Path(__file__).resolve().parents[1]; SCRAPERS=ROOT/'scrapers'; sys.path.insert(0,str(SCRAPERS))
 from network_sources.db import write_provider
+ACCEPTED_FIELDS='name,address,city,state,postalCode,phone,email,website,services,sourceType,sourceTag,sourceUrl,lat,lng,score,match_reasons'.split(',')
+REJECTED_FIELDS='name,address,city,state,postalCode,phone,website,services,sourceUrl,score,rejection_reason,evidenceNote'.split(',')
+EMAIL_RE=re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"); URL_RE=re.compile(r"(?:https?://|www\.)[^\s;,)<]+",re.I); PHONE_RE=re.compile(r"(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}"); ZIP_RE=re.compile(r"\b\d{5}(?:-\d{4})?\b"); STATE_RE=re.compile(r"\b(AL|AK|AZ|AR|CA|CO|CT|DC|DE|FL|GA|HI|IA|ID|IL|IN|KS|KY|LA|MA|MD|ME|MI|MN|MO|MS|MT|NC|ND|NE|NH|NJ|NM|NV|NY|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VA|VT|WA|WI|WV|WY)\b",re.I)
+ACCEPT='occupational,occupational medicine,employee health,urgent care,walk-in clinic,clinic,medical clinic,medical center,hospital,doctor,physician,family practice,family medicine,primary care,laboratory,medical laboratory,diagnostic,imaging,radiology,x-ray,spirometry,audiogram,drug testing,dentist,dental,orthopedic,cardiology,physical therapy,rehabilitation,nursing home,home health,dialysis,ambulance,optometrist,eye care,surgery,surgeon,mental health,counseling,pharmacy'.split(',')
+REJECT='restaurant,pizza,hotel,apartment,salon,spa,veterinary,animal hospital,church,school,grocery,gas station,bank,plumber,photographer,storage,fireworks,fire station,recycling,insurance,rv park,car dealer,clothing store,sunglasses,beauty,bridal,tax,movie,soccer,fishing,flooring,hardware,cannabis,cbd,park,real estate,home builder,lawyer,attorney,boutique'.split(',')
+LABELS={'name':['name','provider_name','provider','business name','facility','title'],'address':['address','full_address','street_address','street','location'],'city':['city','locality'],'state':['state','region','province'],'postalCode':['zip','zipcode','postal','postal code'],'phone':['phone','phone_number','telephone','tel'],'email':['email','e-mail'],'website':['website','site','domain'],'sourceUrl':['sourceurl','source_url','maps url','google maps url','url'],'services':['services','service','category','categories','specialty','speciality','provider_type','type'],'lat':['lat','latitude'],'lng':['lng','lon','longitude']}
 
-FIELDS = ["name", "address", "city", "state", "postalCode", "phone", "email", "website", "services", "sourceTag", "sourceUrl", "evidenceNote", "lat", "lng"]
-EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-URL_RE = re.compile(r"(?:https?://|www\.)[^\s;,)<]+", re.I)
-PHONE_RE = re.compile(r"(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}")
-ZIP_RE = re.compile(r"\b\d{5}(?:-\d{4})?\b")
-STATE_RE = re.compile(r"\b(AL|AK|AZ|AR|CA|CO|CT|DC|DE|FL|GA|HI|IA|ID|IL|IN|KS|KY|LA|MA|MD|ME|MI|MN|MO|MS|MT|NC|ND|NE|NH|NJ|NM|NV|NY|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VA|VT|WA|WI|WV|WY)\b", re.I)
-COORD_RE = re.compile(r"\b(-?\d{1,2}\.\d{3,})\s*[,| ]\s*(-?\d{2,3}\.\d{3,})\b")
-
-CATEGORY_TERMS = [
-    "occupational", "urgent care", "walk-in clinic", "clinic", "medical clinic", "medical center",
-    "hospital", "doctor", "physician", "family practice", "family medicine", "primary care",
-    "laboratory", "medical laboratory", "diagnostic", "imaging", "radiology", "x-ray",
-    "spirometry", "audiogram", "drug testing", "dentist", "dental", "orthopedic",
-    "cardiology", "pediatrician", "physical therapy", "chiropractor", "rehabilitation",
-    "nursing home", "assisted living", "home health", "dialysis", "ambulance", "optometrist",
-    "eye care", "surgery", "surgeon", "mental health", "counseling", "pharmacy",
-]
-
-NAME_TERMS = [
-    "occupational", "urgent care", "clinic", "medical", "hospital", "health center", "family health",
-    "rehabilitation", "nursing", "dental", "dentist", "orthopedic", "spine", "eye care", "pediatrics",
-]
-
-EXCLUDE = [
-    "restaurant", "pizza", "hotel", "apartment", "salon", "spa", "veterinary", "animal hospital",
-    "church", "school", "grocery", "gas station", "bank", "plumber", "photographer", "storage",
-    "fireworks", "fire station", "recycling", "insurance", "rv park", "car dealer", "clothing store",
-    "sunglasses", "beauty", "bridal", "tax", "movie", "soccer", "fishing", "flooring",
-    "hardware", "cannabis", "cbd", "park", "real estate", "home builder", "lawyer", "attorney",
-]
-
-LABELS = {
-    "name": ["name", "provider", "provider name", "business name", "facility", "clinic name", "title"],
-    "address": ["address", "street", "location", "full address", "street address"],
-    "city": ["city", "locality"],
-    "state": ["state", "region", "province"],
-    "postalCode": ["zip", "zipcode", "postal", "postal code"],
-    "phone": ["phone", "phone number", "telephone", "tel", "mobile", "fax", "contact"],
-    "email": ["email", "e-mail"],
-    "website": ["website", "web", "site"],
-    "sourceUrl": ["source url", "source_url", "maps url", "google maps url", "url"],
-    "services": ["services", "service", "category", "categories", "specialty", "speciality", "type"],
-    "lat": ["lat", "latitude"],
-    "lng": ["lng", "lon", "longitude"],
-}
-
-
-def clean(value):
-    if isinstance(value, list):
-        return "; ".join(clean(x) for x in value if clean(x))
-    if isinstance(value, dict):
-        return json.dumps(value, ensure_ascii=False)
-    return " ".join(str(value or "").replace("\u00a0", " ").replace("•", " ").split()).strip(" ,;|-\t\r\n")
-
-
-def key(value):
-    return re.sub(r"[^a-z0-9]+", " ", str(value).lower()).strip()
-
-
-def field_for(label):
-    k = key(label)
-    for field, labels in LABELS.items():
-        if k in labels or any(k.startswith(x) for x in labels):
-            return field
-    return None
-
-
-def has_term(text, terms):
-    blob = f" {text.lower()} "
-    return any(re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", blob) for term in terms)
-
-
-def score(row):
-    name = clean(row.get("name"))
-    services = clean(row.get("services"))
-    description = clean(row.get("description"))
-    address = clean(row.get("address"))
-    blob = f"{name} {services} {description}".lower()
-    if has_term(blob, EXCLUDE):
-        return -10
-
-    value = 0
-    if has_term(services, CATEGORY_TERMS):
-        value += 6
-    if has_term(name, NAME_TERMS):
-        value += 4
-    if has_term(description, ["medical", "clinic", "hospital", "dental", "rehabilitation"]):
-        value += 2
-    if address:
-        value += 1
-    if row.get("phone") or row.get("email") or row.get("website") or row.get("sourceUrl"):
-        value += 1
-    if row.get("lat") and row.get("lng"):
-        value += 1
-    return value
-
-
-def likely_name(line):
-    line = clean(line)
-    if len(line) < 3 or len(line) > 140:
-        return False
-    if ":" in line and len(line.split(":", 1)[0]) <= 30:
-        return False
-    lower = line.lower()
-    if has_term(lower, EXCLUDE):
-        return False
-    return has_term(lower, NAME_TERMS) or (bool(re.match(r"^[A-Z0-9][A-Za-z0-9 '&().,/+-]{2,120}$", line)) and len(line.split()) <= 12)
-
-
-def add(row, field, value):
-    value = clean(value)
-    if not value:
-        return
-    if field == "state" and not STATE_RE.fullmatch(value):
-        return
-    if row.get(field):
-        if value.lower() not in row[field].lower():
-            row[field] += "; " + value
-    else:
-        row[field] = value
-
-
-def derive_location_from_address(row):
-    address = clean(row.get("address"))
-    if not address:
-        return
-    postal = ZIP_RE.search(address)
-    state = STATE_RE.search(address)
-    if postal and not row.get("postalCode"):
-        row["postalCode"] = postal.group(0)
-    if state and not row.get("state"):
-        row["state"] = state.group(1).upper()
-
-    parts = [clean(x) for x in address.split(",") if clean(x)]
-    for index, part in enumerate(parts):
-        if STATE_RE.search(part) and index > 0 and not row.get("city"):
-            row["city"] = parts[index - 1]
-            break
-
-
-def block_to_row(block, source_tag):
-    lines = [clean(x) for x in block.splitlines() if clean(x)]
-    if not lines:
-        return None
-    row = {field: "" for field in FIELDS}
-    row["sourceTag"] = source_tag
-    row["evidenceNote"] = block[:1500]
-
-    for line in lines:
-        m = re.match(r"^([A-Za-z][A-Za-z /_.-]{1,35})\s*[:=]\s*(.+)$", line)
-        if m:
-            field = field_for(m.group(1))
-            if field:
-                add(row, field, m.group(2))
-                continue
-        for item in EMAIL_RE.findall(line):
-            add(row, "email", item)
-        for item in URL_RE.findall(line):
-            add(row, "sourceUrl" if "google.com/maps" in item else "website", item)
-        for item in PHONE_RE.findall(line):
-            add(row, "phone", item)
-        coord = COORD_RE.search(line)
-        if coord:
-            add(row, "lat", coord.group(1))
-            add(row, "lng", coord.group(2))
-        if not row["name"] and likely_name(line):
-            row["name"] = line
-        elif not row["address"] and (ZIP_RE.search(line) or STATE_RE.search(line)) and any(ch.isdigit() for ch in line):
-            row["address"] = line
-
-    derive_location_from_address(row)
-    if not row["services"]:
-        found = [term for term in CATEGORY_TERMS if has_term(block, [term])]
-        row["services"] = "; ".join(dict.fromkeys(found[:8])) or "provider text import"
-    if not row["name"] or not (row["address"] or row["phone"] or row["email"] or row["website"] or row["sourceUrl"] or (row["lat"] and row["lng"])):
-        return None
-    if score(row) < 5:
-        return None
-    return row
-
-
-def text_rows(path, source_tag):
-    text = path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
-    blocks = [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
-    if len(blocks) <= 1:
-        blocks = []
-        current = []
-        for line in [clean(x) for x in text.splitlines() if clean(x)]:
-            if current and likely_name(line):
-                blocks.append("\n".join(current))
-                current = [line]
-            else:
-                current.append(line)
-        if current:
-            blocks.append("\n".join(current))
-    for block in blocks:
-        row = block_to_row(block, source_tag)
-        if row:
-            yield row
-
-
-def source_url_from(raw):
-    for name in ["sourceUrl", "source_url", "maps_url", "url"]:
-        value = clean(raw.get(name)) if isinstance(raw, dict) else ""
-        if value:
-            return value
-    return ""
-
-
-def normalize_structured(raw, source_tag):
-    lower = {key(k): v for k, v in raw.items()}
-    row = {field: "" for field in FIELDS}
-    row["sourceTag"] = source_tag
-    row["evidenceNote"] = json.dumps(raw, ensure_ascii=False)[:1500]
-    row["sourceUrl"] = source_url_from(raw)
-
-    for field, aliases in LABELS.items():
-        if field in {"website", "sourceUrl"}:
-            continue
+def clean(v):
+    if isinstance(v,list): return '; '.join(clean(x) for x in v if clean(x))
+    if isinstance(v,dict): return json.dumps(v,ensure_ascii=False)
+    return ' '.join(str(v or '').replace('\xa0',' ').replace('•',' ').split()).strip(' ,;|\t\r\n')
+def norm(v): return re.sub(r'[^a-z0-9]+',' ',str(v).lower()).strip()
+def has(text,terms):
+    b=' '+(text or '').lower()+' '; return [t for t in terms if re.search(rf'(?<![a-z0-9]){re.escape(t)}(?![a-z0-9])',b)]
+def empty_row(source_type,source_tag): return {k:'' for k in ACCEPTED_FIELDS+['evidenceNote','rejection_reason'] }|{'sourceType':source_type,'sourceTag':source_tag}
+def add(row,k,v):
+    v=clean(v)
+    if v and not row.get(k): row[k]=v
+def source_url(raw):
+    for k in ['sourceUrl','source_url','maps_url','url']:
+        v=clean(raw.get(k,''))
+        if v and ('google.com/maps' in v or k!='url'): return v
+    return ''
+def derive(row):
+    addr=clean(row.get('address'))
+    if not addr: return
+    # strip duplicated business name prefix
+    nm=clean(row.get('name'))
+    if nm and addr.lower().startswith(nm.lower()+','): row['address']=addr[len(nm)+1:].strip(); addr=row['address']
+    z=ZIP_RE.search(addr); st=STATE_RE.search(addr)
+    if z and not row.get('postalCode'): row['postalCode']=z.group(0)
+    if st and not row.get('state'): row['state']=st.group(1).upper()
+    parts=[clean(x) for x in addr.split(',') if clean(x)]
+    for i,p in enumerate(parts):
+        if STATE_RE.search(p) and i>0 and not row.get('city'): row['city']=parts[i-1]
+def score_row(row):
+    blob=f"{row.get('name','')} {row.get('services','')} {row.get('evidenceNote','')}"; rejects=has(blob,REJECT)
+    if rejects: return -10,[f'reject:{r}' for r in rejects],'excluded business category'
+    reasons=[]; score=0; a=has(row.get('services',''),ACCEPT); n=has(row.get('name',''),ACCEPT); e=has(row.get('evidenceNote',''),ACCEPT)
+    if a: score+=6; reasons += [f'service:{x}' for x in a[:5]]
+    if n: score+=4; reasons += [f'name:{x}' for x in n[:3]]
+    if e: score+=2; reasons += [f'evidence:{x}' for x in e[:3]]
+    if row.get('address') or (row.get('lat') and row.get('lng')): score+=1; reasons.append('location evidence')
+    if row.get('phone') or row.get('email') or row.get('website') or row.get('sourceUrl'): score+=1; reasons.append('contact/source evidence')
+    if not row.get('name'): return score,reasons,'missing name'
+    if not (row.get('address') or row.get('phone') or row.get('email') or row.get('website') or row.get('sourceUrl') or row.get('lat')): return score,reasons,'missing location/contact/source evidence'
+    return score,reasons,'below min score'
+def normalize_structured(raw,source_type,source_tag):
+    lower={norm(k):v for k,v in raw.items()}; row=empty_row(source_type,source_tag); row['evidenceNote']=json.dumps(raw,ensure_ascii=False)[:1500]; row['sourceUrl']=source_url(raw)
+    for field,aliases in LABELS.items():
+        if field=='sourceUrl': continue
         for alias in aliases:
-            if alias in lower and lower[alias] not in (None, ""):
-                row[field] = clean(lower[alias])
-                break
-
-    # Google Local / UCSD-style records use category as a list and latitude/longitude keys.
-    if not row["services"] and "category" in raw:
-        row["services"] = clean(raw.get("category"))
-    if not row["lat"] and raw.get("latitude") not in (None, ""):
-        row["lat"] = clean(raw.get("latitude"))
-    if not row["lng"] and raw.get("longitude") not in (None, ""):
-        row["lng"] = clean(raw.get("longitude"))
-    if not row["website"]:
-        for name in ["website", "site", "domain"]:
-            if clean(raw.get(name)):
-                row["website"] = clean(raw.get(name))
-                break
-
-    # Do not treat Google Local operational status as US state.
-    if not STATE_RE.fullmatch(clean(row.get("state"))):
-        row["state"] = ""
-    derive_location_from_address(row)
-
-    if not row["services"]:
-        row["services"] = "imported provider data"
-    return row if row["name"] and score(row) >= 5 else None
-
-
-def structured_rows(path, source_tag, fmt):
-    if fmt == "csv":
-        with path.open("r", encoding="utf-8-sig", newline="") as f:
-            for raw in csv.DictReader(f):
-                row = normalize_structured(raw, source_tag)
-                if row:
-                    yield row
-    elif fmt == "jsonl":
-        with path.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                if line.strip():
-                    row = normalize_structured(json.loads(line), source_tag)
-                    if row:
-                        yield row
-    elif fmt == "json":
-        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-        records = data if isinstance(data, list) else data.get("records", []) if isinstance(data, dict) else []
-        for raw in records:
-            if isinstance(raw, dict):
-                row = normalize_structured(raw, source_tag)
-                if row:
-                    yield row
-
-
-def detect(path, requested):
-    if requested != "auto":
-        return requested
-    suffix = path.suffix.lower()
-    if suffix == ".csv":
-        return "csv"
-    if suffix == ".json":
-        return "json"
-    if suffix == ".jsonl":
-        return "jsonl"
-    with path.open("r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            if stripped.startswith("{"):
-                return "jsonl"
+            if norm(alias) in lower and lower[norm(alias)] not in (None,''):
+                val=clean(lower[norm(alias)])
+                row[field] = (row.get(field) + '; ' + val).strip('; ') if field == 'services' and row.get(field) and val.lower() not in row.get(field,'').lower() else val
+                if field != 'services': break
+    if not row['services'] and raw.get('category'): row['services']=clean(raw.get('category'))
+    if not row['lat'] and raw.get('latitude') not in (None,''): row['lat']=clean(raw.get('latitude'))
+    if not row['lng'] and raw.get('longitude') not in (None,''): row['lng']=clean(raw.get('longitude'))
+    if row.get('sourceUrl','').startswith('https://www.google.com/maps') and row.get('website')==row.get('sourceUrl'): row['website']=''
+    if not STATE_RE.fullmatch(clean(row.get('state'))): row['state']=''
+    derive(row); return row
+def block_row(block,source_type,source_tag):
+    row=empty_row(source_type,source_tag); row['evidenceNote']=block[:1500]; lines=[clean(x) for x in block.splitlines() if clean(x)]
+    if lines: row['name']=lines[0]
+    for line in lines:
+        m=re.match(r'^([A-Za-z][A-Za-z /_.-]{1,35})\s*[:=]\s*(.+)$',line)
+        if m:
+            f=next((k for k,a in LABELS.items() if norm(m.group(1)) in [norm(x) for x in a]),None)
+            if f: add(row,f,m.group(2)); continue
+        for x in EMAIL_RE.findall(line): add(row,'email',x)
+        for x in URL_RE.findall(line): add(row,'sourceUrl' if 'google.com/maps' in x else 'website',x)
+        for x in PHONE_RE.findall(line): add(row,'phone',x)
+        if not row['address'] and (ZIP_RE.search(line) or STATE_RE.search(line)) and any(c.isdigit() for c in line): row['address']=line
+    found=has(block,ACCEPT); row['services']=row['services'] or '; '.join(found[:6])
+    derive(row); return row
+def detect(path,requested):
+    if requested!='auto': return requested
+    if path.suffix.lower()=='.csv': return 'csv'
+    if path.suffix.lower()=='.json': return 'json'
+    if path.suffix.lower()=='.jsonl': return 'jsonl'
+    for line in path.read_text(encoding='utf-8',errors='replace').splitlines():
+        if line.strip():
+            if line.lstrip().startswith('{'): return 'jsonl'
             break
-    return "txt"
-
-
-def dedupe(rows):
-    seen = set()
-    out = []
-    for row in rows:
-        item = (row["name"].lower(), row["address"].lower(), row["phone"].lower(), row["website"].lower(), row["sourceUrl"].lower())
-        if item not in seen:
-            seen.add(item)
-            out.append(row)
-    return out
-
-
-def save_csv(rows, path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDS)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
+    return 'txt'
+def read_rows(path,fmt,source_type,source_tag,limit=None):
+    n=0
+    def emit(r):
+        nonlocal n
+        if limit and n>=limit: return None
+        n+=1; return r
+    if fmt=='csv':
+        with path.open(encoding='utf-8-sig',newline='') as f:
+            for raw in csv.DictReader(f):
+                r=emit(normalize_structured(raw,source_type,source_tag))
+                if r: yield r
+    elif fmt=='jsonl':
+        for line in path.read_text(encoding='utf-8',errors='replace').splitlines():
+            if line.strip():
+                r=emit(normalize_structured(json.loads(line),source_type,source_tag))
+                if r: yield r
+    elif fmt=='json':
+        data=json.loads(path.read_text(encoding='utf-8',errors='replace')); recs=data if isinstance(data,list) else data.get('records',[]) if isinstance(data,dict) else []
+        for raw in recs:
+            r=emit(normalize_structured(raw,source_type,source_tag))
+            if r: yield r
+    else:
+        text=path.read_text(encoding='utf-8',errors='replace').replace('\r\n','\n'); blocks=[b.strip() for b in re.split(r'\n\s*\n',text) if b.strip()] or [text]
+        for b in blocks:
+            r=emit(block_row(b,source_type,source_tag))
+            if r: yield r
+def write_csv(path,fields,rows):
+    path.parent.mkdir(parents=True,exist_ok=True)
+    with path.open('w',encoding='utf-8-sig',newline='') as f: w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows([{k:r.get(k,'') for k in fields} for r in rows])
 def main():
-    parser = argparse.ArgumentParser(description="Clean messy provider/location files and optionally import rows into Neon.")
-    parser.add_argument("input", type=Path)
-    parser.add_argument("--format", choices=["auto", "txt", "csv", "json", "jsonl"], default="auto")
-    parser.add_argument("--source-tag", default="provider_text_import")
-    parser.add_argument("--out", type=Path)
-    parser.add_argument("--write", action="store_true")
-    args = parser.parse_args()
-
-    fmt = detect(args.input, args.format)
-    rows = dedupe(text_rows(args.input, args.source_tag) if fmt == "txt" else structured_rows(args.input, args.source_tag, fmt))
-    if args.out:
-        save_csv(rows, args.out)
-    written = skipped = 0
+    ap=argparse.ArgumentParser(); ap.add_argument('input',type=Path); ap.add_argument('--format',choices=['auto','txt','csv','json','jsonl'],default='auto'); ap.add_argument('--accepted-out',type=Path); ap.add_argument('--rejected-out',type=Path); ap.add_argument('--report-out',type=Path); ap.add_argument('--min-score',type=float,default=5); ap.add_argument('--limit',type=int); ap.add_argument('--source-type',default='provider_file_import'); ap.add_argument('--source-tag',default='provider_text_import'); ap.add_argument('--out',type=Path); ap.add_argument('--write',action='store_true'); args=ap.parse_args()
+    fmt=detect(args.input,args.format); accepted=[]; rejected=[]; ar=Counter(); rr=Counter(); seen=set(); total=0
+    for row in read_rows(args.input,fmt,args.source_type,args.source_tag,args.limit):
+        total+=1; sc,reasons,rej=score_row(row); row['score']=sc; row['match_reasons']='; '.join(reasons)
+        key=(row.get('name','').lower(),row.get('address','').lower(),row.get('phone',''),row.get('sourceUrl',''))
+        if key in seen: continue
+        seen.add(key)
+        if sc>=args.min_score and not rej.startswith('missing'):
+            accepted.append(row); ar.update(reasons or ['accepted'])
+        else:
+            row['rejection_reason']=rej; rejected.append(row); rr.update([rej])
+    if args.out and not args.accepted_out: args.accepted_out=args.out
+    if args.accepted_out: write_csv(args.accepted_out,ACCEPTED_FIELDS,accepted)
+    if args.rejected_out: write_csv(args.rejected_out,REJECTED_FIELDS,rejected)
+    written=skipped=0
     if args.write:
-        for row in rows:
-            result = write_provider(row)
-            if result.get("status") == "written":
-                written += 1
-            else:
-                skipped += 1
-    print(f"Detected format: {fmt}")
-    print(f"Provider-looking rows: {len(rows):,}")
-    if args.out:
-        print(f"Saved cleaned CSV: {args.out}")
-    if args.write:
-        print(f"Written: {written:,}")
-        print(f"Skipped: {skipped:,}")
-
-
-if __name__ == "__main__":
-    main()
+        for row in accepted:
+            res=write_provider(row); written += 1 if res.get('status')=='written' else 0; skipped += 0 if res.get('status')=='written' else 1
+    report={'input file':str(args.input),'detected format':fmt,'sourceType':args.source_type,'sourceTag':args.source_tag,'total rows read':total,'accepted count':len(accepted),'rejected count':len(rejected),'written count':written,'skipped count':skipped,'top accepted reasons':ar.most_common(10),'top rejection reasons':rr.most_common(10)}
+    if args.report_out: args.report_out.parent.mkdir(parents=True,exist_ok=True); args.report_out.write_text(json.dumps(report,indent=2),encoding='utf-8')
+    print(json.dumps(report,indent=2))
+if __name__=='__main__': main()
