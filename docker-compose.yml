@@ -1,24 +1,47 @@
+version: '3.8'
+
 services:
   feeder:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: network-map-provider-feeder
+    restart: unless-stopped
+    
     environment:
-      DATABASE_URL: ${DATABASE_URL}
-      DISABLE_TELEMETRY: "1"
+      NODE_ENV: production
+      SCRAPER_MODE: binary
+      SCRAPER_BINARY: google-maps-scraper
+      DISABLE_TELEMETRY: 1
       PLAYWRIGHT_BROWSERS_PATH: /opt/browsers
       PLAYWRIGHT_DRIVER_PATH: /opt/ms-playwright-go/1.57.0
       PLAYWRIGHT_NODEJS_PATH: /usr/bin/node
-      SCRAPER_MODE: binary
-      SCRAPER_BINARY: google-maps-scraper
-      MAX_JOBS_PER_LOOP: "1"
-      WORKER_POLL_INTERVAL_MS: "30000"
-      DEFAULT_CONCURRENCY: "1"
-      SCRAPER_TIMEOUT_MS: "300000"
-      VALIDATE_SCHEMA_ON_START: "1"
-      AUTO_SEED_ON_START: "1"
-      MIN_PENDING_JOBS: "25"
-      MAX_AUTO_SEED_JOBS: "250"
-      ALLOW_SCHEMA_CHANGES: "0"
-      DEFAULT_RADIUS_METERS: "40000"
-      DEFAULT_SCRAPER_DEPTH: "1"
-      DEFAULT_FAST_MODE: "0"
-    restart: unless-stopped
+      DATABASE_URL: ${DATABASE_URL}
+      VALIDATE_SCHEMA_ON_START: ${VALIDATE_SCHEMA_ON_START:-1}
+      AUTO_SEED_ON_START: ${AUTO_SEED_ON_START:-1}
+      MIN_PENDING_JOBS: ${MIN_PENDING_JOBS:-25}
+      MAX_AUTO_SEED_JOBS: ${MAX_AUTO_SEED_JOBS:-250}
+      RESET_STALE_RUNNING_MINUTES: ${RESET_STALE_RUNNING_MINUTES:-120}
+      DEFAULT_CONCURRENCY: ${DEFAULT_CONCURRENCY:-1}
+      MAX_JOBS_PER_LOOP: ${MAX_JOBS_PER_LOOP:-1}
+      SCRAPER_TIMEOUT_MS: ${SCRAPER_TIMEOUT_MS:-300000}
+      TARGET_STATES: ${TARGET_STATES:-}
+      TARGET_CITIES: ${TARGET_CITIES:-}
+      TARGET_SERVICE_LINES: ${TARGET_SERVICE_LINES:-}
+      DEFAULT_RADIUS_METERS: ${DEFAULT_RADIUS_METERS:-40000}
+      DEFAULT_SCRAPER_DEPTH: ${DEFAULT_SCRAPER_DEPTH:-1}
+      DEFAULT_FAST_MODE: ${DEFAULT_FAST_MODE:-0}
+    
+    volumes:
+      - /opt/browsers
+      - /opt/ms-playwright-go
+    
+    networks:
+      - feeder-network
+    
+    # Restart policy for failed jobs
+    restart: on-failure:3
+
+networks:
+  feeder-network:
+    driver: bridge
