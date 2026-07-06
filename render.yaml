@@ -38,9 +38,7 @@ services:
       - key: SCRAPER_TIMEOUT_MS
         value: 300000
       - key: DATABASE_URL
-        fromDatabase:
-          name: network-map-postgres
-          property: connectionString
+        sync: false
     healthCheckPath: /health
     healthCheckTimeout: 300
     numInstances: 1
