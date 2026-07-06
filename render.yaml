@@ -1,45 +1,4 @@
-services:
-  - type: worker
-    name: network-map-provider-feeder
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    plan: free
-    maxShutdownDelaySeconds: 120
-    envVars:
-      - key: DATABASE_URL
-        sync: false
-      - key: NODE_ENV
-        value: production
-      - key: DISABLE_TELEMETRY
-        value: "1"
-      - key: SCRAPER_MODE
-        value: binary
-      - key: SCRAPER_BINARY
-        value: google-maps-scraper
-      - key: SCRAPER_TIMEOUT_MS
-        value: "300000"
-      - key: SCRAPER_EXIT_ON_INACTIVITY
-        value: 3m
-      - key: DEFAULT_CONCURRENCY
-        value: "1"
-      - key: MAX_JOBS_PER_LOOP
-        value: "1"
-      - key: WORKER_POLL_INTERVAL_MS
-        value: "30000"
-      - key: VALIDATE_SCHEMA_ON_START
-        value: "1"
-      - key: AUTO_SEED_ON_START
-        value: "1"
-      - key: MIN_PENDING_JOBS
-        value: "25"
-      - key: MAX_AUTO_SEED_JOBS
-        value: "250"
-      - key: DEFAULT_RADIUS_METERS
-        value: "40000"
-      - key: DEFAULT_SCRAPER_DEPTH
-        value: "1"
-      - key: DEFAULT_FAST_MODE
-        value: "0"
-      - key: RESET_STALE_RUNNING_MINUTES
-        value: "120"
+# Render Background Worker is not the deployment target for this project.
+# The feeder is intended to remain free-first, and Render worker setup was not available on the user's free path.
+# Keep this file empty of services so Render Blueprints do not accidentally create paid infrastructure.
+services: []
