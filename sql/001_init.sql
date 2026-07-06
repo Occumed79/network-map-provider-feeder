@@ -1,8 +1,11 @@
 -- ============================================================
 -- network-map-provider-feeder — initial migration
--- Creates and updates feeder tables in the shared Neon Postgres database.
--- These tables are owned by the feeder service but are safe for
--- Network Map to read (SELECT only).
+-- Creates and updates feeder-owned tables in the shared Neon
+-- Postgres database.
+--
+-- Important: this migration intentionally uses feeder-prefixed
+-- candidate tables so it does not collide with Network Map's
+-- existing provider_candidates table.
 -- ============================================================
 
 -- 1. provider_feeder_jobs
@@ -73,8 +76,8 @@ CREATE INDEX IF NOT EXISTS idx_raw_results_cid
 CREATE INDEX IF NOT EXISTS idx_raw_results_query
     ON google_maps_raw_results (query);
 
--- 3. provider_candidates
-CREATE TABLE IF NOT EXISTS provider_candidates (
+-- 3. provider_feeder_candidates
+CREATE TABLE IF NOT EXISTS provider_feeder_candidates (
     id               BIGSERIAL PRIMARY KEY,
     name             TEXT        NOT NULL,
     normalized_name  TEXT        NOT NULL,
@@ -93,20 +96,20 @@ CREATE TABLE IF NOT EXISTS provider_candidates (
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_candidates_dedupe
-    ON provider_candidates (dedupe_key);
-CREATE INDEX IF NOT EXISTS idx_provider_candidates_name
-    ON provider_candidates (normalized_name);
-CREATE INDEX IF NOT EXISTS idx_provider_candidates_country
-    ON provider_candidates (country_code);
-CREATE INDEX IF NOT EXISTS idx_provider_candidates_geo
-    ON provider_candidates (country_code, latitude, longitude)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_feeder_candidates_dedupe
+    ON provider_feeder_candidates (dedupe_key);
+CREATE INDEX IF NOT EXISTS idx_feeder_candidates_name
+    ON provider_feeder_candidates (normalized_name);
+CREATE INDEX IF NOT EXISTS idx_feeder_candidates_country
+    ON provider_feeder_candidates (country_code);
+CREATE INDEX IF NOT EXISTS idx_feeder_candidates_geo
+    ON provider_feeder_candidates (country_code, latitude, longitude)
     WHERE latitude IS NOT NULL AND longitude IS NOT NULL;
 
--- 4. provider_candidate_sources
-CREATE TABLE IF NOT EXISTS provider_candidate_sources (
+-- 4. provider_feeder_candidate_sources
+CREATE TABLE IF NOT EXISTS provider_feeder_candidate_sources (
     id               BIGSERIAL PRIMARY KEY,
-    candidate_id     BIGINT NOT NULL REFERENCES provider_candidates(id) ON DELETE CASCADE,
+    candidate_id     BIGINT NOT NULL REFERENCES provider_feeder_candidates(id) ON DELETE CASCADE,
     raw_result_id    BIGINT NOT NULL REFERENCES google_maps_raw_results(id) ON DELETE CASCADE,
     job_id           BIGINT REFERENCES provider_feeder_jobs(id) ON DELETE SET NULL,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -116,18 +119,18 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
-        WHERE conname = 'provider_candidate_sources_unique_link'
+        WHERE conname = 'provider_feeder_candidate_sources_unique_link'
     ) THEN
-        ALTER TABLE provider_candidate_sources
-        ADD CONSTRAINT provider_candidate_sources_unique_link
+        ALTER TABLE provider_feeder_candidate_sources
+        ADD CONSTRAINT provider_feeder_candidate_sources_unique_link
         UNIQUE (candidate_id, raw_result_id, job_id);
     END IF;
 END $$;
 
-CREATE INDEX IF NOT EXISTS idx_pcs_candidate_id
-    ON provider_candidate_sources (candidate_id);
-CREATE INDEX IF NOT EXISTS idx_pcs_raw_result_id
-    ON provider_candidate_sources (raw_result_id);
+CREATE INDEX IF NOT EXISTS idx_pfcs_candidate_id
+    ON provider_feeder_candidate_sources (candidate_id);
+CREATE INDEX IF NOT EXISTS idx_pfcs_raw_result_id
+    ON provider_feeder_candidate_sources (raw_result_id);
 
 -- 5. provider_feeder_runs
 CREATE TABLE IF NOT EXISTS provider_feeder_runs (
