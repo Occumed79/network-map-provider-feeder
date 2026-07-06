@@ -7,18 +7,6 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: FREE_ONLY_MODE
-        value: 1
-      - key: SCRAPER_PROVIDER
-        value: parallel_mapped_http
-      - key: MAP_SOURCES
-        value: bing,google,apple
-      - key: MAP_HTTP_TIMEOUT_MS
-        value: 30000
-      - key: MAX_RESULTS_PER_SOURCE
-        value: 40
-      - key: MAX_RESULTS_PER_JOB
-        value: 120
       - key: DISABLE_TELEMETRY
         value: 1
       - key: ENABLE_SCHEMA_BOOTSTRAP
@@ -31,20 +19,6 @@ services:
         value: provider_candidates
       - key: ENABLE_APP_CANDIDATE_WRITE
         value: 1
-      - key: AUTO_SEED_ON_START
-        value: 1
-      - key: MIN_PENDING_JOBS
-        value: 25
-      - key: MAX_AUTO_SEED_JOBS
-        value: 250
-      - key: RESET_STALE_RUNNING_MINUTES
-        value: 120
-      - key: DEFAULT_CONCURRENCY
-        value: 1
-      - key: MAX_JOBS_PER_LOOP
-        value: 1
-      - key: SCRAPER_TIMEOUT_MS
-        value: 300000
       - key: DATABASE_URL
         sync: false
     healthCheckPath: /health
