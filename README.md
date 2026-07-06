@@ -34,6 +34,13 @@ messy txt/csv/json/jsonl provider dumps
 → provider_candidates
 ```
 
+```text
+government health registry/source manifest
+→ source reviewed one country at a time
+→ Scrapy config or downloaded file import
+→ provider_candidates
+```
+
 ## What the Render web service does
 
 1. Starts the dashboard and health endpoints.
@@ -113,6 +120,46 @@ For UCSD-style JSONL or other already-collected records:
 SCRAPY_WRITE_TO_NEON=1 npm run import:providers -- data/records.jsonl --format jsonl --source-tag ucsd_google_local_subset --write
 ```
 
+### 3. Government health source manifest
+
+The official-health-source list is stored at:
+
+```text
+scrapers/sources/government_health_sources.csv
+```
+
+It contains country-level official health authority, facility registry, and healthcare locator URLs.
+
+The manifest has two handling modes:
+
+| Mode | Meaning |
+|---|---|
+| `facility_registry` | Likely direct provider/facility source; review first and convert to Scrapy config or file import. |
+| `authority_discovery` | Ministry/authority page; use only after finding a linked directory, register, CSV/XLS/PDF, or extractable listing. |
+
+Do not mass-enable all sources. Promote sources one country at a time after review.
+
+Start with:
+
+```text
+crawlMode=facility_registry
+```
+
+Then choose the correct path:
+
+```text
+HTML listing page → country-specific Scrapy config
+CSV/XLS/JSON/JSONL download → import:providers
+PDF directory → extract:pdf then import:providers
+plain ministry homepage → discovery only; do not write to Neon
+```
+
+See:
+
+```text
+scrapers/sources/government_health_sources.README.md
+```
+
 ## Required tables
 
 | Table | Purpose |
@@ -173,5 +220,5 @@ scripts/seed-jobs.js
 The current repo direction is:
 
 ```text
-Render dashboard + Scrapy crawler ingestion + provider file cleanup + Neon final provider output
+Render dashboard + Scrapy crawler ingestion + provider file cleanup + government source manifest + Neon final provider output
 ```
