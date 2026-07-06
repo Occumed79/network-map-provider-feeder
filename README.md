@@ -1,77 +1,104 @@
-# network-map-provider-feeder
+# Network Map Provider Feeder
 
-Standalone feeder worker for Network Map. It runs controlled Google Maps extraction jobs, stores raw results, normalizes/deduplicates them into provider candidates, and writes to the same Neon Postgres database used by Network Map.
+Render-deployable feeder service for the Network Map provider database.
 
-This repo is intentionally separate from the Network Map frontend. Network Map can read `provider_candidates` later without this worker changing the UI.
+This service continuously claims provider search jobs, runs parallel mapped-source lookups, stores raw mapped results, normalizes/deduplicates provider candidates, and exposes a small dashboard from the same web service.
 
-## Important Neon guardrail
+## Current shape
 
-This feeder must **not** alter the shared Neon schema by default. It now treats Neon as the source of truth:
-
-- Startup performs read-only schema validation only.
-- No table creation, column creation, index creation, or constraint changes happen during normal worker startup.
-- Job seeding checks the existing `provider_feeder_jobs` columns and only inserts values into columns that already exist.
-- The manual migration script is guarded and refuses to run unless `ALLOW_SCHEMA_CHANGES=1` is explicitly set.
+- Runtime: lightweight Node Docker service.
+- Deployment target: Render web service.
+- Sources: parallel mapped HTTP lookups from Bing Maps, Google Maps, and Apple Maps.
+- Database: existing Neon Postgres database.
+- UI: built-in dashboard served from `/` and `/dashboard`.
+- Health/API endpoints: `/health`, `/healthz`, `/status`, `/api/dashboard`.
 
 ## What this service does
 
-- Deploys as a Render-ready Docker worker.
-- Runs `google-maps-scraper` from inside the worker container.
-- Polls existing `provider_feeder_jobs` rows.
-- Seeds targeted backlog jobs when enabled, while conforming to existing Neon columns.
-- Stores raw scraper output in `google_maps_raw_results`.
-- Normalizes/deduplicates rows into `provider_candidates`.
-- Links candidates to raw rows in `provider_candidate_sources`.
-- Resets stale running jobs after deploys/restarts.
+1. Starts a small HTTP server for the dashboard and health checks.
+2. Validates the required Neon feeder tables without changing schema.
+3. Resets stale running jobs after deploys/restarts.
+4. Seeds targeted provider-search jobs when the queue is low.
+5. Claims pending jobs one at a time by default.
+6. Runs enabled mapped sources in parallel for each job.
+7. Merges/dedupes source results.
+8. Writes raw rows to `google_maps_raw_results`.
+9. Writes normalized rows to `provider_feeder_candidates`.
+10. Links candidate/source rows in `provider_feeder_candidate_sources`.
+11. Records run history in `provider_feeder_runs`.
 
 ## Architecture
 
 ```text
-provider_feeder_jobs
-        ↓
-feeder worker
-        ↓
-google-maps-scraper binary / Docker image
-        ↓
-google_maps_raw_results
-        ↓
-provider_candidates + provider_candidate_sources
-        ↓
-Network Map reads candidate data later
+Render web service
+  ├─ Dashboard: / and /dashboard
+  ├─ Health/API: /health, /status, /api/dashboard
+  └─ Worker loop
+       ├─ provider_feeder_jobs
+       ├─ Bing Maps HTTP lookup
+       ├─ Google Maps HTTP lookup
+       ├─ Apple Maps HTTP lookup
+       ├─ google_maps_raw_results
+       ├─ provider_feeder_candidates
+       ├─ provider_feeder_candidate_sources
+       └─ provider_feeder_runs
 ```
 
-## Tables read/written by the worker
+## Neon schema guardrail
+
+This repo treats Neon as the source of truth.
+
+Normal startup is read-only for schema. It validates that the required feeder tables already exist, but it does not create tables, add columns, add indexes, or alter constraints.
+
+Required tables:
 
 | Table | Purpose |
 |---|---|
-| `provider_feeder_jobs` | Existing job queue with query/status/attempt fields. Optional columns are used only if already present. |
-| `google_maps_raw_results` | Raw scraper output per job. |
-| `provider_candidates` | Normalized/deduped provider records. |
-| `provider_candidate_sources` | Links candidates to raw source rows. |
-| `provider_feeder_runs` | Per-job run history. |
+| `provider_feeder_jobs` | Queue of mapped-source search jobs. |
+| `google_maps_raw_results` | Raw mapped-source rows captured per job. |
+| `provider_feeder_candidates` | Normalized/deduped provider candidates owned by this feeder. |
+| `provider_feeder_candidate_sources` | Links candidates to raw source rows and jobs. |
+| `provider_feeder_runs` | Run history for each claimed job. |
 
-## Key environment variables
+## Dashboard
+
+Open the Render service URL directly.
+
+| Route | Purpose |
+|---|---|
+| `/` | Dashboard UI. |
+| `/dashboard` | Dashboard UI. |
+| `/api/dashboard` | Dashboard data as JSON. |
+| `/health` | Machine-readable health check. |
+| `/healthz` | Machine-readable health check. |
+| `/status` | Machine-readable status check. |
+
+The dashboard shows job counts, raw result counts, candidate counts, source counts, recent jobs, recent candidates, recent errors, and current worker status.
+
+## Environment variables
 
 | Variable | Default | Purpose |
 |---|---:|---|
 | `DATABASE_URL` | — | Neon connection string. Required. |
-| `SCRAPER_MODE` | `binary` | `binary`, `docker`, or `auto`. Render uses `binary`. |
-| `SCRAPER_BINARY` | `google-maps-scraper` | Binary name/path inside the container. |
-| `SCRAPER_TIMEOUT_MS` | `300000` | Per-job scraper timeout. |
-| `DEFAULT_CONCURRENCY` | `1` | Scraper concurrency. Keep low at first. |
+| `FREE_ONLY_MODE` | `1` | Keeps source policy locked to mapped-source providers. |
+| `SCRAPER_PROVIDER` | `parallel_mapped_http` | Provider policy label for the active scraper. |
+| `MAP_SOURCES` | `bing,google,apple` | Comma-separated mapped sources to run in parallel. |
+| `MAP_HTTP_TIMEOUT_MS` | `30000` | Timeout per mapped-source HTTP request. |
+| `MAX_RESULTS_PER_SOURCE` | `40` | Max accepted results from each source per job. |
+| `MAX_RESULTS_PER_JOB` | `120` | Max merged results written per job. |
 | `MAX_JOBS_PER_LOOP` | `1` | Jobs claimed per worker loop. |
-| `VALIDATE_SCHEMA_ON_START` | `1` | Read-only validation of expected tables/required job columns. |
-| `AUTO_SEED_ON_START` | `1` | Keep the queue stocked with targeted jobs. |
-| `MIN_PENDING_JOBS` | `25` | Minimum active pending/running jobs before auto-seeding more. |
-| `MAX_AUTO_SEED_JOBS` | `250` | Max jobs inserted by an auto-seed pass. |
-| `ALLOW_SCHEMA_CHANGES` | `0` | Guard for manual migration only. Keep off for normal deployment. |
-| `TARGET_STATES` | blank | Optional comma list like `CA,TX,FL`. |
-| `TARGET_CITIES` | blank | Optional comma list like `Fresno CA,Pensacola FL`. |
-| `TARGET_SERVICE_LINES` | blank | Optional comma list of service keys. |
-| `DEFAULT_RADIUS_METERS` | `40000` | Used only if Neon already has `radius_meters`. |
-| `DEFAULT_SCRAPER_DEPTH` | `1` | Used only if Neon already has `scraper_depth`. |
-| `DEFAULT_FAST_MODE` | `0` | Used only if Neon already has `scraper_fast_mode`. |
-| `RESET_STALE_RUNNING_MINUTES` | `120` | Return stuck running jobs to pending after this many minutes. |
+| `DEFAULT_CONCURRENCY` | `1` | Kept for compatibility; current mapped HTTP path runs sources in parallel per job. |
+| `VALIDATE_SCHEMA_ON_START` | `1` | Validate required feeder tables before polling. |
+| `AUTO_SEED_ON_START` | `1` | Seed backlog jobs when active queue is low. |
+| `MIN_PENDING_JOBS` | `25` | Minimum pending/running jobs before auto-seeding more. |
+| `MAX_AUTO_SEED_JOBS` | `250` | Max jobs inserted during one auto-seed pass. |
+| `RESET_STALE_RUNNING_MINUTES` | `120` | Return old stuck running jobs to pending. |
+| `TARGET_STATES` | blank | Optional state filter, for example `CA,TX,FL`. |
+| `TARGET_CITIES` | blank | Optional city filter, for example `Fresno CA,Pensacola FL`. |
+| `TARGET_SERVICE_LINES` | blank | Optional service-line filter. |
+| `DEFAULT_RADIUS_METERS` | `40000` | Radius stored on seeded jobs when the column exists. |
+| `DEFAULT_SCRAPER_DEPTH` | `1` | Legacy-compatible job field. |
+| `DEFAULT_FAST_MODE` | `0` | Legacy-compatible job field. |
 
 Service-line keys:
 
@@ -88,50 +115,27 @@ occupational_spirometry
 
 ## Render deployment
 
-Use the included `render.yaml`. The important part is:
+Use `render.yaml`.
 
-```yaml
-runtime: docker
-```
+The Render service is a Docker web service so the dashboard can load in the browser while the worker continues processing jobs.
 
-Required Render env var:
+Required Render secret/env var:
 
 ```text
-DATABASE_URL=<your shared Neon connection string>
+DATABASE_URL=<Neon connection string>
 ```
 
-On startup the worker will:
+Everything else has safe defaults in `render.yaml`.
 
-1. Validate the existing Neon schema without changing it.
-2. Reset stale running jobs.
-3. Seed a targeted backlog if enabled, using only columns that exist in Neon.
-4. Poll jobs.
-5. Write raw rows and normalized provider candidates into the existing tables.
+## Scripts
 
-## Local development
-
-```bash
-cp .env.example .env
-# Set DATABASE_URL in .env
-npm install
-npm run smoke
-npm run seed
-npm run worker
-```
-
-Do not run migrations against the shared Neon DB unless that is explicitly intended:
-
-```bash
-ALLOW_SCHEMA_CHANGES=1 npm run migrate
-```
-
-For Docker local testing:
-
-```bash
-cp .env.example .env
-# Set DATABASE_URL in .env
-docker compose up --build
-```
+| Command | Purpose |
+|---|---|
+| `npm run worker` | Start source-policy check and worker/dashboard server. |
+| `npm run seed` | Manually seed targeted jobs. |
+| `npm run seed:targeted` | Same as `seed`. |
+| `npm run smoke` | Verify database connection and required feeder tables. |
+| `npm run check` | Syntax-check source and script files. |
 
 ## Useful SQL checks
 
@@ -142,7 +146,7 @@ GROUP BY status
 ORDER BY status;
 
 SELECT count(*) FROM google_maps_raw_results;
-SELECT count(*) FROM provider_candidates;
+SELECT count(*) FROM provider_feeder_candidates;
 
 SELECT id, query, status, attempts, error, created_at, completed_at
 FROM provider_feeder_jobs
@@ -150,11 +154,11 @@ ORDER BY id DESC
 LIMIT 25;
 
 SELECT name, address, phone, website, confidence_score, status
-FROM provider_candidates
+FROM provider_feeder_candidates
 ORDER BY updated_at DESC
 LIMIT 25;
 ```
 
-## Scope guardrail
+## Scope
 
-This is still a controlled feeder. It does not brute-force every city or every business. It creates targeted occupational-health searches and grows the database job by job so Network Map can consume cleaner provider candidates later, while conforming to the existing Neon schema.
+This is a controlled continuous feeder. It does not scrape every business on the internet. It creates targeted occupational-health search jobs, runs mapped sources in parallel, and grows the database job by job so Network Map can consume cleaner provider candidates later.

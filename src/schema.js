@@ -1,5 +1,3 @@
-import { readFile } from "fs/promises";
-import { join } from "path";
 import { query } from "./db.js";
 import { logger } from "./logger.js";
 
@@ -48,18 +46,4 @@ export async function validateSchema() {
   }
 
   logger.info("Read-only Neon schema validation passed", { tables: requiredTables.length });
-}
-
-export async function migrateSchema() {
-  if (process.env.ALLOW_SCHEMA_CHANGES !== "1") {
-    throw new Error(
-      "Schema migrations are disabled. Set ALLOW_SCHEMA_CHANGES=1 only when you intentionally want this repo to modify Neon."
-    );
-  }
-
-  const sqlPath = join(process.cwd(), "sql", "001_init.sql");
-  const sql = await readFile(sqlPath, "utf8");
-  logger.warn("Running guarded migration because ALLOW_SCHEMA_CHANGES=1 is set");
-  await query(sql);
-  logger.info("Migration completed successfully.");
 }
