@@ -28,7 +28,7 @@ function summarizeReport(run) { try { Object.assign(run, JSON.parse(readFileSync
 
 export function getCurrentRun() { return currentRun; }
 export function getRecentRuns() { return recentRuns; }
-export function resolveOutput(runId, filename) { const full = resolve(TMP_OUTPUT, runId, filename); const base = resolve(TMP_OUTPUT, runId); if (!full.startsWith(base) || basename(full) !== filename || !existsSync(full)) return null; return full; }
+export function resolveOutput(runId, filename) { const base = resolve(TMP_OUTPUT, runId); const full = resolve(base, filename); if (!full.startsWith(`${base}/`) || basename(full) !== filename || !existsSync(full)) return null; return full; }
 
 export function startRun(mode, params = {}) {
   if (currentRun.status === "running") throw new Error(`Run ${currentRun.runId} is already running`);
