@@ -1,5 +1,6 @@
 import { createServer } from "http";
 import { query, withTransaction, end } from "./db.js";
+import { handleDashboardRequest } from "./dashboard.js";
 import { runScraper } from "./scraper.js";
 import { logger } from "./logger.js";
 import { validateSchema } from "./schema.js";
@@ -38,20 +39,19 @@ function startHealthServer() {
   const port = parseInt(process.env.PORT || "0", 10);
   if (!port) return null;
 
-  const server = createServer((req, res) => {
-    const path = req.url?.split("?")[0] || "/";
-    if (!["/", "/health", "/healthz", "/status"].includes(path)) {
-      res.writeHead(404, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: false, error: "not_found" }));
-      return;
+  const server = createServer(async (req, res) => {
+    try {
+      const result = await handleDashboardRequest(req, health);
+      res.writeHead(result.statusCode, result.headers);
+      res.end(result.body);
+    } catch (err) {
+      res.writeHead(500, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ ok: false, error: err.message }));
     }
-
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true, service: "network-map-provider-feeder", ...health }));
   });
 
   server.listen(port, "0.0.0.0", () => {
-    logger.info("Health server listening", { port });
+    logger.info("Dashboard server listening", { port });
   });
   return server;
 }
@@ -323,7 +323,7 @@ async function main() {
     concurrency: DEFAULT_CONCURRENCY,
     validateSchema: VALIDATE_SCHEMA_ON_START,
     autoSeed: AUTO_SEED_ON_START,
-    healthServer: Boolean(healthServer),
+    dashboardServer: Boolean(healthServer),
   });
 
   if (VALIDATE_SCHEMA_ON_START) await validateSchema();
