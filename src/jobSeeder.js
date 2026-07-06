@@ -145,25 +145,37 @@ export function buildTargetedJobs({ maxJobs = 250 } = {}) {
   return jobs;
 }
 
+function buildDuplicateCheck(job, availableColumns) {
+  const conditions = ["lower(query) = lower($1::text)"];
+  const values = [job.query];
+
+  if (availableColumns.has("country_code")) {
+    values.push(job.country_code || "US");
+    conditions.push(`country_code = $${values.length}::varchar`);
+  }
+  if (availableColumns.has("region_name")) {
+    values.push(job.region_name || null);
+    conditions.push(`COALESCE(region_name, '') = COALESCE($${values.length}::text, '')`);
+  }
+  if (availableColumns.has("service_line")) {
+    values.push(job.service_line || null);
+    conditions.push(`COALESCE(service_line, '') = COALESCE($${values.length}::text, '')`);
+  }
+
+  return {
+    text: `SELECT 1 FROM provider_feeder_jobs WHERE ${conditions.join(" AND ")} LIMIT 1`,
+    values,
+  };
+}
+
 function buildProviderJobInsert(job, availableColumns) {
   const entries = Object.entries(job).filter(([column, value]) => availableColumns.has(column) && value !== undefined);
   const columns = entries.map(([column]) => column);
   const values = entries.map(([, value]) => value);
   const placeholders = values.map((_, index) => `$${index + 1}`);
-  const indexOf = (column) => columns.indexOf(column) + 1;
-
-  const conditions = ["lower(query) = lower($1)"];
-  if (indexOf("country_code") > 0) conditions.push(`country_code = $${indexOf("country_code")}`);
-  if (indexOf("region_name") > 0) conditions.push(`COALESCE(region_name, '') = COALESCE($${indexOf("region_name")}, '')`);
-  if (indexOf("service_line") > 0) conditions.push(`COALESCE(service_line, '') = COALESCE($${indexOf("service_line")}, '')`);
 
   return {
-    text: `INSERT INTO provider_feeder_jobs (${columns.join(", ")})
-           SELECT ${placeholders.join(", ")}
-           WHERE NOT EXISTS (
-             SELECT 1 FROM provider_feeder_jobs
-             WHERE ${conditions.join(" AND ")}
-           )`,
+    text: `INSERT INTO provider_feeder_jobs (${columns.join(", ")}) VALUES (${placeholders.join(", ")})`,
     values,
     skippedColumns: Object.keys(job).filter((column) => !availableColumns.has(column)),
   };
@@ -176,6 +188,10 @@ export async function seedTargetedJobs({ maxJobs = 250, source = "auto_seed" } =
   const skippedColumns = new Set();
 
   for (const job of jobs) {
+    const duplicateCheck = buildDuplicateCheck(job, availableColumns);
+    const duplicate = await query(duplicateCheck.text, duplicateCheck.values);
+    if (duplicate.rows.length) continue;
+
     const statement = buildProviderJobInsert(job, availableColumns);
     statement.skippedColumns.forEach((column) => skippedColumns.add(column));
     const { rowCount } = await query(statement.text, statement.values);
