@@ -1,25 +1,36 @@
 # Scrapy crawler ingestion
 
-This folder turns the feeder into a crawler-capable provider ingestion app.
+This folder contains the Scrapy tools for provider ingestion.
 
-The mapped-page parser can stay, but Scrapy is the practical path for provider discovery from clinic directory pages and sitemap-driven location pages.
+## Provider crawler
 
-## What it does
-
-- Crawls public clinic/location directories from configurable source files.
-- Extracts provider rows: name, address, city, state, phone, website, services, source URL, and optional coordinates.
-- Can write directly into Neon when `SCRAPY_WRITE_TO_NEON=1`.
-- Writes raw source rows into `google_maps_raw_results` with `raw.source = scrapy_directory`.
-- Writes staging rows into `provider_feeder_candidates`.
-- Upserts final app-facing rows into `provider_candidates` when `ENABLE_APP_CANDIDATE_WRITE=1`.
-
-## Run a crawler
-
-From the `scrapers` folder:
+Run a configured clinic/location crawler from the `scrapers` folder:
 
 ```bash
 SCRAPY_WRITE_TO_NEON=1 scrapy crawl clinic_directory -a config=sources/my-source.json -O output/my-source.jsonl
 ```
+
+## Government health source seeds
+
+The official health source list is stored here:
+
+```text
+sources/government_health_sources.csv
+```
+
+Run the government source spider from the `scrapers` folder:
+
+```bash
+scrapy crawl government_health_discovery -O output/government-health-discovered-links.csv
+```
+
+Limit to selected countries:
+
+```bash
+scrapy crawl government_health_discovery -a countries="Ghana,Peru,Portugal" -O output/government-health-discovered-links.csv
+```
+
+This produces lead pages with country, source URL, discovered URL, title, anchor text, and match reasons. It does not write provider rows to Neon. Good leads can be turned into `clinic_directory` configs or downloaded files for `import_provider_text.py`.
 
 ## Environment
 
@@ -28,16 +39,4 @@ DATABASE_URL=<Neon URL>
 SCRAPY_WRITE_TO_NEON=1
 ENABLE_APP_CANDIDATE_WRITE=1
 APP_CANDIDATE_TABLE=provider_candidates
-```
-
-## Current direction
-
-The app is no longer forced to live or die by consumer map HTML parsing. The useful flow is now:
-
-```text
-clinic directory pages / sitemap pages
-→ Scrapy extracted provider rows
-→ raw rows
-→ feeder staging/dedupe
-→ provider_candidates
 ```
