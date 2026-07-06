@@ -1,5 +1,5 @@
-# Use the scraper image as the runtime base so Render does not need Docker-in-Docker.
-# The app runs the google-maps-scraper binary directly inside this container.
+# Use the scraper image as the runtime base so the app can run the
+# google-maps-scraper binary directly inside this container.
 FROM gosom/google-maps-scraper:latest
 
 USER root
@@ -9,7 +9,9 @@ ENTRYPOINT []
 ENV NODE_ENV=production \
     SCRAPER_MODE=binary \
     SCRAPER_BINARY=google-maps-scraper \
-    DISABLE_TELEMETRY=1
+    DISABLE_TELEMETRY=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/browsers \
+    PLAYWRIGHT_DRIVER_PATH=/opt/ms-playwright-go
 
 RUN set -eux; \
     if ! command -v node >/dev/null 2>&1; then \
@@ -22,6 +24,8 @@ RUN set -eux; \
     if ! command -v npm >/dev/null 2>&1; then \
       corepack enable || true; \
     fi; \
+    if [ -d /opt/ms-playwright-go ]; then chmod -R 755 /opt/ms-playwright-go; fi; \
+    if [ -d /opt/browsers ]; then chmod -R 755 /opt/browsers; fi; \
     if ! command -v google-maps-scraper >/dev/null 2>&1; then \
       scraper_path="$(find / -type f -name 'google-maps-scraper' -perm /111 2>/dev/null | head -n 1)"; \
       test -n "$scraper_path"; \
