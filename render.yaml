@@ -10,17 +10,15 @@ services:
       - key: FREE_ONLY_MODE
         value: 1
       - key: SCRAPER_PROVIDER
-        value: bing_maps_http
-      - key: MAP_SOURCE
-        value: bing
-      - key: ENABLE_MAP_SOURCE_FALLBACK
-        value: 1
+        value: parallel_mapped_http
+      - key: MAP_SOURCES
+        value: bing,google,apple
       - key: MAP_HTTP_TIMEOUT_MS
         value: 30000
-      - key: MAP_HTTP_REQUEST_DELAY_MS
-        value: 750
-      - key: MAX_RESULTS_PER_JOB
+      - key: MAX_RESULTS_PER_SOURCE
         value: 40
+      - key: MAX_RESULTS_PER_JOB
+        value: 120
       - key: DISABLE_TELEMETRY
         value: 1
       - key: VALIDATE_SCHEMA_ON_START
