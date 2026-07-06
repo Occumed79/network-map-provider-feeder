@@ -1,0 +1,51 @@
+name: Free scheduled feeder
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+concurrency:
+  group: provider-feeder
+  cancel-in-progress: false
+
+jobs:
+  run-feeder:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build feeder image
+        run: docker build -t provider-feeder:scheduled .
+
+      - name: Run feeder batch
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set +e
+          timeout 25m docker run --rm \
+            -e DATABASE_URL="$DATABASE_URL" \
+            -e NODE_ENV=production \
+            -e FREE_ONLY_MODE=1 \
+            -e SCRAPER_MODE=binary \
+            -e SCRAPER_BINARY=google-maps-scraper \
+            -e DEFAULT_CONCURRENCY=1 \
+            -e MAX_JOBS_PER_LOOP=1 \
+            -e WORKER_POLL_INTERVAL_MS=30000 \
+            -e VALIDATE_SCHEMA_ON_START=1 \
+            -e AUTO_SEED_ON_START=1 \
+            -e MIN_PENDING_JOBS=25 \
+            -e MAX_AUTO_SEED_JOBS=50 \
+            -e DEFAULT_SCRAPER_DEPTH=1 \
+            -e DEFAULT_FAST_MODE=0 \
+            -e RESET_STALE_RUNNING_MINUTES=60 \
+            -e ALLOW_SCHEMA_CHANGES=0 \
+            provider-feeder:scheduled
+          code=$?
+          if [ "$code" = "124" ]; then
+            echo "Feeder batch reached the scheduled time window and stopped cleanly for this free run."
+            exit 0
+          fi
+          exit "$code"
