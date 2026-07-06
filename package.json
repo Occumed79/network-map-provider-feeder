@@ -1,7 +1,7 @@
 {
   "name": "network-map-provider-feeder",
   "version": "1.1.0",
-  "description": "Render web service that continuously feeds Network Map with normalized provider candidates from parallel mapped-source lookups.",
+  "description": "Render web service and Scrapy-capable crawler that feeds Network Map with normalized provider candidates.",
   "main": "src/worker.js",
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "check:source-policy": "node scripts/check-source-policy.js",
     "worker": "npm run check:source-policy && node src/worker.js",
     "smoke": "node scripts/smoke.js",
+    "crawl:clinic": "cd scrapers && scrapy crawl clinic_directory",
     "check": "node --check src/worker.js && node --check src/dashboard.js && node --check src/scraper.js && node --check src/appCandidateWriter.js && node --check src/jobSeeder.js && node --check src/schema.js && node --check src/sourcePolicy.js && node --check scripts/check-source-policy.js && node --check scripts/seed-jobs.js && node --check scripts/smoke.js"
   },
   "dependencies": {
