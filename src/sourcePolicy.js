@@ -1,13 +1,11 @@
 import { logger } from "./logger.js";
 
-const DEFAULT_PROVIDER = "bing_maps_http";
+const DEFAULT_PROVIDER = "parallel_mapped_http";
 const ALLOWED_MAP_PROVIDERS = new Set([
   DEFAULT_PROVIDER,
+  "bing_maps_http",
   "google_maps_http",
   "apple_maps_http",
-  "free_google_maps_scraper",
-  "google_maps_scraper",
-  "gosom_google_maps_scraper",
 ]);
 
 export function enforceSourcePolicy() {
