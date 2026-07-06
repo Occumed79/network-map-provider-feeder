@@ -2,13 +2,14 @@
 
 Render dashboard, Scrapy crawler ingestion, and provider-file cleanup tools for the Network Map provider database.
 
-This repo no longer uses the old Bing/Google/Apple HTML map parser. The old map worker loop and source-policy files have been removed. Provider growth now comes from crawler configs and import tools that write cleaned provider rows into Neon.
+This repo no longer uses the old Bing/Google/Apple HTML map parser. The old map worker loop and source-policy files have been removed. Provider growth now comes from crawler configs, source discovery, and import tools that write cleaned provider rows into Neon.
 
 ## Current shape
 
 - Runtime: Docker web service with Node dashboard and Python/Scrapy runtime installed.
 - Deployment target: Render web service.
 - Primary ingestion paths: Scrapy crawler configs and provider file imports.
+- Source discovery: official government health source list under `scrapers/sources/government_health_sources.csv`.
 - Database: existing Neon Postgres database.
 - Final output: `provider_candidates`.
 - Staging/dedupe: `provider_feeder_candidates`.
@@ -24,6 +25,13 @@ clinic directory pages / location pages
 → google_maps_raw_results
 → provider_feeder_candidates
 → provider_candidates
+```
+
+```text
+official government health source list
+→ government_health_discovery spider
+→ likely registry/facility/provider pages
+→ targeted source configs or provider file imports
 ```
 
 ```text
@@ -64,7 +72,31 @@ Scrapy writes to Neon only when:
 SCRAPY_WRITE_TO_NEON=1
 ```
 
-### 2. Provider text/file import
+### 2. Government health source discovery
+
+The file `scrapers/sources/government_health_sources.csv` stores official/best government health links by country.
+
+Run the discovery spider to find likely provider registry, facility locator, health map, clinic, hospital, doctor, or healthcare-service pages:
+
+```bash
+npm run discover:gov-health -- -O output/government-health-discovered-links.csv
+```
+
+Limit to one or more countries:
+
+```bash
+npm run discover:gov-health -- -a countries="Ghana,Peru,Portugal" -O output/government-health-discovered-links.csv
+```
+
+The discovery spider does not write providers to Neon. It produces lead pages that should become either:
+
+```text
+scrapers/sources/<source>.json crawler configs
+```
+
+or downloaded/cleaned files imported with `npm run import:providers`.
+
+### 3. Provider text/file import
 
 Use `scripts/import_provider_text.py` for already-collected provider/location data that needs cleanup.
 
@@ -154,6 +186,7 @@ SCRAPY_WRITE_TO_NEON=1 npm run import:providers -- data/records.jsonl --format j
 | `npm run worker` | Start the Render dashboard/health service. |
 | `npm run smoke` | Verify database connection and required feeder tables. |
 | `npm run crawl:clinic -- -a config=sources/my-source.json` | Run the config-driven Scrapy clinic directory crawler from `scrapers/`. |
+| `npm run discover:gov-health` | Crawl official health source seeds and output likely provider/facility directory pages. |
 | `npm run import:providers -- <file>` | Clean/import provider-looking rows from txt/csv/json/jsonl files. |
 | `npm run check` | Syntax-check the Node files. |
 
@@ -173,5 +206,5 @@ scripts/seed-jobs.js
 The current repo direction is:
 
 ```text
-Render dashboard + Scrapy crawler ingestion + provider file cleanup + Neon final provider output
+Render dashboard + Scrapy crawler ingestion + government source discovery + provider file cleanup + Neon final provider output
 ```
