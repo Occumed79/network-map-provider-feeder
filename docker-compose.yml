@@ -5,7 +5,8 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       DISABLE_TELEMETRY: "1"
       PLAYWRIGHT_BROWSERS_PATH: /opt/browsers
-      PLAYWRIGHT_DRIVER_PATH: /opt/ms-playwright-go
+      PLAYWRIGHT_DRIVER_PATH: /opt/ms-playwright-go/1.57.0
+      PLAYWRIGHT_NODEJS_PATH: /usr/bin/node
       SCRAPER_MODE: binary
       SCRAPER_BINARY: google-maps-scraper
       MAX_JOBS_PER_LOOP: "1"
