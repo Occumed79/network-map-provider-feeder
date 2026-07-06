@@ -12,16 +12,23 @@ SCRAPY_WRITE_TO_NEON=1 scrapy crawl clinic_directory -a config=sources/my-source
 
 ## Government health source seeds
 
-The official health source list is stored here:
+The official health source lists are stored here:
 
 ```text
 sources/government_health_sources.csv
+sources/government_health_sources_part2.csv
 ```
 
-Run the government source spider from the `scrapers` folder:
+Run the first government source list from the `scrapers` folder:
 
 ```bash
 scrapy crawl government_health_discovery -O output/government-health-discovered-links.csv
+```
+
+Run the second government source list:
+
+```bash
+scrapy crawl government_health_discovery -a source_file=sources/government_health_sources_part2.csv -O output/government-health-discovered-links-part2.csv
 ```
 
 Limit to selected countries:
