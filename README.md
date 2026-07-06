@@ -227,6 +227,8 @@ Render dashboard + Scrapy crawler ingestion + provider file cleanup + government
 
 The Render service is now the **Provider Ingestion Dashboard**. It is a manual ingestion console, not a scheduled scraper system. The expected workflow is always **preview first** and **write second**.
 
+Set `MANUAL_INGESTION_TOKEN` (or `OPERATOR_TOKEN` / `INGESTION_OPERATOR_TOKEN`) in deployed environments. Manual write/run endpoints require this operator token unless `ALLOW_UNAUTHENTICATED_MANUAL_RUNS=1` is explicitly set for a trusted local/dev environment.
+
 Important tables:
 - `provider_candidates` is the final app-facing output.
 - `provider_feeder_candidates` is staging/dedupe only.

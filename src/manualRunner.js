@@ -92,8 +92,16 @@ function execStep(run, command, args, opts = {}) {
 async function download(url, dest) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Download failed: ${response.status}`);
-  writeFileSync(dest, Buffer.from(await response.arrayBuffer()));
-  return dest;
+  const body = Buffer.from(await response.arrayBuffer());
+  writeFileSync(dest, body);
+  return { path: dest, contentType: response.headers.get("content-type") || "", body };
+}
+
+function isPdfDownload(downloaded, sourceType) {
+  return sourceType === "pdf_provider_directory"
+    || /\.pdf$/i.test(downloaded.path)
+    || /application\/pdf/i.test(downloaded.contentType)
+    || downloaded.body.subarray(0, 5).toString("utf8") === "%PDF-";
 }
 
 function importerArgs(input, run, write, sourceType, sourceTag) {
@@ -230,11 +238,11 @@ export function startRun(mode, params = {}) {
       } else if (mode === "import_document_url") {
         const url = assertHttpUrl(params.url);
         const input = join(TMP_INPUT, `${runId}-${basename(url.pathname) || "document"}`);
-        await download(url.href, input);
+        const downloaded = await download(url.href, input);
 
         let importInput = input;
         let sourceType = params.sourceType || "provider_file_import";
-        if (/\.pdf$/i.test(input)) {
+        if (isPdfDownload(downloaded, sourceType)) {
           importInput = join(out, "pdf-extracted.csv");
           sourceType = "pdf_provider_directory";
           await execStep(run, "python", ["scripts/extract_medical_providers.py", input, importInput]);

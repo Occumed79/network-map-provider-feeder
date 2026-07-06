@@ -28,6 +28,22 @@ class ImportProviderTextTests(unittest.TestCase):
             self.assertEqual(r['state'],'AL'); self.assertEqual(r['postalCode'],'36695'); self.assertEqual(r['city'],'Mobile')
             names={x['name'] for x in rej}; self.assertIn('Purple Peanut',names); self.assertIn('Pizza Hut',names); self.assertIn('Piney Grove Freewill Baptist',names); self.assertIn('Linx Plaza Apartments',names)
         finally: td.cleanup()
+
+    def test_raw_text_without_blank_lines_preserves_multiple_records(self):
+        content = (
+            'Alpha Medical Clinic\n'
+            '10 Main St, Mobile, AL 36602\n'
+            '251-555-1000\n'
+            'Beta Urgent Care\n'
+            '20 Broad St, Mobile, AL 36603\n'
+            '251-555-2000\n'
+        )
+        td,acc,rej,rep=self.run_import(content,'.txt','provider_file_import')
+        try:
+            self.assertEqual(len(acc),2)
+            self.assertEqual({row['name'] for row in acc},{'Alpha Medical Clinic','Beta Urgent Care'})
+        finally: td.cleanup()
+
     def test_csv_aliases_and_outputs(self):
         content='provider_name,provider_type,specialty,category,address,phone\nTest Medical,Medical clinic,Primary care,Clinic,"10 Main St, Mobile, AL 36602",2515551212\n'
         td,acc,rej,rep=self.run_import(content,'.csv','provider_file_import')

@@ -212,7 +212,7 @@ function dashboardHtml() {
 <main>
   <div id="warnings"></div>
   <section class="grid cards" id="cards"></section>
-  <section class="panel"><h2>Manual Provider Ingestion</h2><p class="hint">Preview first. Write buttons run explicit Neon writes only after review.</p><div class="grid cards">
+  <section class="panel"><h2>Manual Provider Ingestion</h2><p class="hint">Preview first. Write buttons run explicit Neon writes only after review.</p><input id="operatorToken" placeholder="Operator token (required when configured)" type="password"><div class="grid cards">
     <div class="card"><h3>Scrape / Discover from URL</h3><input id="scrapeUrl" placeholder="https://example.gov/facility-directory"><input id="scrapeCountry" placeholder="Country optional"><input id="scrapeTag" placeholder="Source tag optional"><button class="button" onclick="startManual('scrape-url',false)">Preview</button><button class="button" onclick="startManual('scrape-url',true)">Write to Neon</button></div>
     <div class="card"><h3>Government Health Seeds</h3><select id="govSource"><option value="all">All</option><option value="part1">Part 1</option><option value="part2">Part 2</option></select><input id="govCountries" placeholder="Countries optional, comma-separated"><button class="button" onclick="startManual('discover-government-health')">Run discovery</button></div>
     <div class="card"><h3>Import Document/File URL</h3><input id="docUrl" placeholder="https://example.gov/providers.pdf"><select id="docType"><option>pdf_provider_directory</option><option>provider_file_import</option><option>google_local_jsonl_import</option></select><input id="docTag" placeholder="Source tag optional"><button class="button" onclick="startManual('import-document-url',false)">Preview</button><button class="button" onclick="startManual('import-document-url',true)">Write to Neon</button></div>
@@ -232,7 +232,7 @@ let isRefreshing=false;
 
 async function startManual(kind,write=false){
   const body = kind==='scrape-url'?{url:scrapeUrl.value,country:scrapeCountry.value,sourceTag:scrapeTag.value,write}:kind==='discover-government-health'?{sourceFile:govSource.value,countries:govCountries.value}:kind==='import-document-url'?{url:docUrl.value,sourceType:docType.value,sourceTag:docTag.value,write}:{text:rawText.value,sourceType:'provider_file_import',sourceTag:rawTag.value||'manual_raw_text',write};
-  const r=await fetch('/api/run/'+kind,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}); const d=await r.json(); if(!r.ok) alert(d.error||'run failed'); await refresh();
+  const headers={'content-type':'application/json'}; if(operatorToken.value) headers.authorization='Bearer '+operatorToken.value; const r=await fetch('/api/run/'+kind,{method:'POST',headers,body:JSON.stringify(body)}); const d=await r.json(); if(!r.ok) alert(d.error||'run failed'); await refresh();
 }
 function renderRun(r){
   const files=r.outputFiles||{}; const links=Object.values(files).map(f=>'<a class="button" href="/api/output/'+esc(r.runId||'')+'/'+esc(f)+'">'+esc(f)+'</a>').join(' ');
@@ -286,6 +286,18 @@ async function readJsonBody(req) {
 }
 function validateHttpUrl(value) { const u = new URL(value || ''); if (!['http:', 'https:'].includes(u.protocol)) throw new Error('URL must be http/https'); return u.href; }
 
+function operatorToken() {
+  return process.env.MANUAL_INGESTION_TOKEN || process.env.OPERATOR_TOKEN || process.env.INGESTION_OPERATOR_TOKEN || "";
+}
+
+function isAuthorizedRunRequest(req) {
+  const token = operatorToken();
+  if (!token && process.env.ALLOW_UNAUTHENTICATED_MANUAL_RUNS === "1") return true;
+  if (!token) return false;
+  const bearer = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  return bearer === token || req.headers["x-operator-token"] === token;
+}
+
 export async function handleDashboardRequest(req, health) {
   const url = new URL(req.url || "/", "http://localhost");
   if (url.pathname === "/" || url.pathname === "/dashboard") return response(200, "text/html; charset=utf-8", dashboardHtml());
@@ -298,6 +310,9 @@ export async function handleDashboardRequest(req, health) {
     return { statusCode: 200, headers: { "content-type": "application/octet-stream", "content-disposition": `attachment; filename="${basename(path)}"` }, body: createReadStream(path) };
   }
   if (req.method === "POST" && url.pathname.startsWith("/api/run/")) {
+    if (!isAuthorizedRunRequest(req)) {
+      return json(401, { ok: false, error: "operator_token_required" });
+    }
     try {
       const body = await readJsonBody(req); let mode = url.pathname.slice("/api/run/".length).replaceAll("-", "_");
       if (["scrape_url", "import_document_url"].includes(mode)) body.url = validateHttpUrl(body.url);
