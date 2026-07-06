@@ -1,311 +1,230 @@
+import { spawn } from "child_process";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
+import { constants } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 import { logger } from "./logger.js";
 
-const NPI_API_URL = process.env.NPI_API_URL || "https://npiregistry.cms.hhs.gov/api/";
-const NPI_VERSION = process.env.NPI_VERSION || "2.1";
-const NPI_LIMIT = Math.min(parseInt(process.env.NPI_LIMIT || "50", 10), 200);
-const NPI_REQUEST_DELAY_MS = parseInt(process.env.NPI_REQUEST_DELAY_MS || "250", 10);
-const NPI_MAX_STRATEGIES = parseInt(process.env.NPI_MAX_STRATEGIES || "6", 10);
-const ENABLE_CENSUS_GEOCODING = process.env.ENABLE_CENSUS_GEOCODING !== "0";
-const MAX_GEOCODES_PER_JOB = parseInt(process.env.MAX_GEOCODES_PER_JOB || "10", 10);
-const CENSUS_GEOCODER_URL = process.env.CENSUS_GEOCODER_URL || "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress";
-const CENSUS_BENCHMARK = process.env.CENSUS_BENCHMARK || "Public_AR_Current";
+const SCRAPER_IMAGE = process.env.SCRAPER_IMAGE || "gosom/google-maps-scraper";
+const SCRAPER_BINARY = process.env.SCRAPER_BINARY || "google-maps-scraper";
+const SCRAPER_MODE = (process.env.SCRAPER_MODE || "auto").toLowerCase();
+const SCRAPER_TIMEOUT_MS = parseInt(process.env.SCRAPER_TIMEOUT_MS || "300000", 10);
+const SCRAPER_EXIT_ON_INACTIVITY = process.env.SCRAPER_EXIT_ON_INACTIVITY || "3m";
+const SCRAPER_PROXIES = process.env.SCRAPER_PROXIES || "";
+const DISABLE_TELEMETRY = process.env.DISABLE_TELEMETRY === "1";
 
-const SERVICE_TERMS = {
-  occupational_health: ["occupational", "industrial", "employee", "work", "healthworks", "workwell", "concentra"],
-  occupational_medicine: ["occupational", "industrial", "medicine", "work", "concentra", "healthworks"],
-  pre_employment: ["occupational", "employee", "pre employment", "work", "urgent", "concentra"],
-  dot_physical: ["dot", "occupational", "urgent", "concentra", "medexpress", "afc"],
-  workers_comp: ["workers", "worker", "occupational", "industrial", "work", "concentra"],
-  physical_ability: ["occupational", "industrial", "work", "physical", "concentra", "workwell"],
-  occupational_audiogram: ["occupational", "industrial", "audiology", "hearing", "work", "concentra"],
-  occupational_spirometry: ["occupational", "industrial", "pulmonary", "respiratory", "work", "concentra"],
-};
+function buildScraperArgs({ inputFile, outputFile, depth, concurrency, geo, radiusMeters, fastMode }) {
+  const args = [
+    "-input", inputFile,
+    "-results", outputFile,
+    "-json",
+    "-depth", String(depth),
+    "-c", String(concurrency),
+    "-exit-on-inactivity", SCRAPER_EXIT_ON_INACTIVITY,
+  ];
 
-const TAXONOMY_STRATEGIES = {
-  occupational_health: ["Clinic/Center", "Occupational Medicine"],
-  occupational_medicine: ["Occupational Medicine", "Clinic/Center"],
-  pre_employment: ["Clinic/Center", "Urgent Care"],
-  dot_physical: ["Clinic/Center", "Urgent Care"],
-  workers_comp: ["Clinic/Center", "Occupational Medicine"],
-  physical_ability: ["Clinic/Center", "Physical Medicine & Rehabilitation"],
-  occupational_audiogram: ["Audiologist", "Clinic/Center"],
-  occupational_spirometry: ["Clinic/Center", "Pulmonary Disease"],
-};
-
-const geocodeCache = new Map();
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  if (SCRAPER_PROXIES) args.push("-proxies", SCRAPER_PROXIES);
+  if (fastMode) args.push("-fast-mode");
+  if (geo?.lat != null && geo?.lng != null) args.push("-geo", `${geo.lat},${geo.lng}`);
+  if (radiusMeters) args.push("-radius", String(radiusMeters));
+  return args;
 }
 
-function normalizeWhitespace(value) {
-  return String(value || "").replace(/\s+/g, " ").trim();
-}
-
-function titleCase(value) {
-  const cleaned = normalizeWhitespace(value);
-  if (!cleaned) return null;
-  return cleaned
-    .toLowerCase()
-    .replace(/\b([a-z])/g, (match) => match.toUpperCase())
-    .replace(/\b(Llc|Inc|Pllc|Pa|Pc|Md|Dds|Do|Npi|Usa|Afc)\b/g, (match) => match.toUpperCase());
-}
-
-function parseCityState(query) {
-  const match = normalizeWhitespace(query).match(/\bin\s+(.+?)\s+([A-Z]{2})\s*$/i);
-  if (!match) return { city: null, state: null };
-  return { city: titleCase(match[1]), state: match[2].toUpperCase() };
-}
-
-function uniq(values) {
-  return [...new Set(values.filter(Boolean).map((value) => normalizeWhitespace(value)).filter(Boolean))];
-}
-
-async function fetchJson(url, { timeoutMs = 30000 } = {}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        accept: "application/json",
-        "user-agent": "network-map-provider-feeder/2.0 (+https://github.com/Occumed79/network-map-provider-feeder)",
-      },
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status} from ${url}`);
-    return await response.json();
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function npiUrl(params) {
-  const url = new URL(NPI_API_URL);
-  url.searchParams.set("version", NPI_VERSION);
-  url.searchParams.set("enumeration_type", "NPI-2");
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== null && String(value).trim() !== "") {
-      url.searchParams.set(key, String(value));
+async function executableExists(command) {
+  if (command.includes("/")) {
+    try {
+      await access(command, constants.X_OK);
+      return true;
+    } catch {
+      return false;
     }
   }
-  return url;
-}
 
-function buildStrategies({ query, serviceLine, city, state }) {
-  const queryTokens = normalizeWhitespace(query)
-    .toLowerCase()
-    .replace(/\bin\s+.+?\s+[a-z]{2}$/i, "")
-    .split(/[^a-z0-9]+/)
-    .filter((token) => token.length >= 3 && !["clinic", "health", "physical"].includes(token));
-
-  const serviceTerms = SERVICE_TERMS[serviceLine] || SERVICE_TERMS.occupational_health;
-  const taxonomyTerms = TAXONOMY_STRATEGIES[serviceLine] || TAXONOMY_STRATEGIES.occupational_health;
-  const organizationTerms = uniq([...serviceTerms, ...queryTokens]).slice(0, NPI_MAX_STRATEGIES);
-
-  const strategies = [];
-  for (const term of organizationTerms) {
-    strategies.push({ organization_name: term, city, state });
-  }
-  for (const taxonomy of taxonomyTerms) {
-    strategies.push({ taxonomy_description: taxonomy, city, state });
-  }
-
-  if (state && !city) {
-    for (const term of organizationTerms.slice(0, 3)) strategies.push({ organization_name: term, state });
-  }
-
-  const seen = new Set();
-  return strategies.filter((strategy) => {
-    const key = JSON.stringify(strategy);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
+  return new Promise((resolve) => {
+    const child = spawn("sh", ["-lc", `command -v ${JSON.stringify(command)} >/dev/null 2>&1`], { stdio: "ignore" });
+    child.on("close", (code) => resolve(code === 0));
+    child.on("error", () => resolve(false));
   });
 }
 
-function chooseLocationAddress(result) {
-  const addresses = Array.isArray(result.addresses) ? result.addresses : [];
-  return (
-    addresses.find((address) => address.address_purpose === "LOCATION") ||
-    addresses.find((address) => address.address_type === "DOM") ||
-    addresses[0] ||
-    null
-  );
+function runCommand(command, args, { timeout, env = {}, label }) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      env: { ...process.env, ...env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 5000).unref();
+      reject(new Error(`${label} timed out after ${timeout}ms`));
+    }, timeout);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.length > 1024 * 1024) stdout = stdout.slice(-1024 * 1024);
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 1024 * 1024) stderr = stderr.slice(-1024 * 1024);
+    });
+
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (stderr) logger.debug(`${label} stderr`, { stderr: stderr.slice(0, 1000) });
+      if (stdout) logger.debug(`${label} stdout`, { stdout: stdout.slice(0, 1000) });
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(new Error(`${label} exited with code ${code}: ${stderr.slice(0, 1000)}`));
+    });
+  });
 }
 
-function formatAddress(address) {
-  if (!address) return null;
-  const street = [address.address_1, address.address_2].map(normalizeWhitespace).filter(Boolean).join(" ");
-  return [street, address.city, address.state, address.postal_code].map(normalizeWhitespace).filter(Boolean).join(", ") || null;
-}
+async function parseResultFile(outputFile) {
+  let raw;
+  try {
+    raw = await readFile(outputFile, "utf8");
+  } catch {
+    logger.warn("No output file produced by scraper", { file: outputFile });
+    return [];
+  }
 
-function primaryTaxonomy(result) {
-  const taxonomies = Array.isArray(result.taxonomies) ? result.taxonomies : [];
-  return taxonomies.find((taxonomy) => taxonomy.primary) || taxonomies[0] || null;
-}
-
-function taxonomyCategories(result) {
-  const taxonomies = Array.isArray(result.taxonomies) ? result.taxonomies : [];
-  return taxonomies.map((taxonomy) => taxonomy.desc || taxonomy.description || taxonomy.code).filter(Boolean);
-}
-
-function relevanceText(result) {
-  const basic = result.basic || {};
-  const address = chooseLocationAddress(result);
-  return [
-    basic.organization_name,
-    basic.authorized_official_organization_name,
-    primaryTaxonomy(result)?.desc,
-    taxonomyCategories(result).join(" "),
-    address?.city,
-    address?.state,
-  ].map(normalizeWhitespace).join(" ").toLowerCase();
-}
-
-function isRelevant(result, serviceLine) {
-  const text = relevanceText(result);
-  const serviceTerms = SERVICE_TERMS[serviceLine] || SERVICE_TERMS.occupational_health;
-  if (serviceTerms.some((term) => text.includes(term.toLowerCase()))) return true;
-  if (text.includes("occupational medicine")) return true;
-  if (text.includes("urgent care")) return ["dot_physical", "pre_employment"].includes(serviceLine);
-  return false;
-}
-
-async function geocodeAddress(address) {
-  if (!ENABLE_CENSUS_GEOCODING || !address) return null;
-  const key = address.toLowerCase();
-  if (geocodeCache.has(key)) return geocodeCache.get(key);
-
-  const url = new URL(CENSUS_GEOCODER_URL);
-  url.searchParams.set("address", address);
-  url.searchParams.set("benchmark", CENSUS_BENCHMARK);
-  url.searchParams.set("format", "json");
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
 
   try {
-    const payload = await fetchJson(url, { timeoutMs: 15000 });
-    const match = payload?.result?.addressMatches?.[0];
-    const coordinates = match?.coordinates;
-    const value = coordinates?.x != null && coordinates?.y != null
-      ? { latitude: Number(coordinates.y), longitude: Number(coordinates.x), matchedAddress: match.matchedAddress }
-      : null;
-    geocodeCache.set(key, value);
-    return value;
-  } catch (err) {
-    logger.warn("Census geocode failed", { address, error: err.message });
-    geocodeCache.set(key, null);
-    return null;
+    const parsed = JSON.parse(trimmed);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    const rows = [];
+    for (const line of trimmed.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        rows.push(JSON.parse(line));
+      } catch (err) {
+        logger.warn("Skipping malformed JSON scraper output line", { error: err.message });
+      }
+    }
+    return rows;
   }
 }
 
-async function normalizeNpiResult(result, { query, serviceLine, geo, geocodeBudget }) {
-  const basic = result.basic || {};
-  const address = chooseLocationAddress(result);
-  const formattedAddress = formatAddress(address);
-  const taxonomy = primaryTaxonomy(result);
-  let geocode = null;
-
-  if (geocodeBudget.remaining > 0 && formattedAddress) {
-    geocodeBudget.remaining -= 1;
-    geocode = await geocodeAddress(formattedAddress);
-    if (NPI_REQUEST_DELAY_MS > 0) await sleep(Math.min(NPI_REQUEST_DELAY_MS, 1100));
-  }
-
-  return {
-    title: titleCase(basic.organization_name) || titleCase(basic.authorized_official_organization_name),
-    category: taxonomy?.desc || taxonomy?.description || "NPI Organization",
-    categories: taxonomyCategories(result),
-    address: formattedAddress,
-    phone: address?.telephone_number || null,
-    fax: address?.fax_number || null,
-    website: null,
-    latitude: geocode?.latitude ?? null,
-    longitude: geocode?.longitude ?? null,
-    place_id: result.number ? `npi:${result.number}` : null,
-    google_place_id: result.number ? `npi:${result.number}` : null,
-    npi: result.number || null,
-    service_line: serviceLine,
-    source: "npi_registry",
-    source_query: query,
-    matched_address: geocode?.matchedAddress || null,
-    location_precision: geocode ? "census_address" : geo ? "city_job_without_exact_address_geocode" : "none",
-    raw_npi: result,
-  };
-}
-
-async function fetchNpiStrategy(strategy, { page, limit }) {
-  const url = npiUrl({ ...strategy, limit, skip: page * limit });
-  logger.info("Fetching NPI Registry page", {
-    strategy,
-    page,
-    limit,
+async function runBinaryScraper(opts, paths) {
+  const args = buildScraperArgs({
+    inputFile: paths.queryFile,
+    outputFile: paths.localOutFile,
+    depth: opts.depth,
+    concurrency: opts.concurrency,
+    geo: opts.geo,
+    radiusMeters: opts.radiusMeters,
+    fastMode: opts.fastMode,
   });
-  return await fetchJson(url, { timeoutMs: 30000 });
+
+  logger.info("Starting scraper binary", {
+    query: opts.query,
+    binary: SCRAPER_BINARY,
+    depth: opts.depth,
+    concurrency: opts.concurrency,
+    timeout: opts.timeout,
+    fastMode: opts.fastMode,
+  });
+
+  await runCommand(SCRAPER_BINARY, args, {
+    timeout: opts.timeout,
+    env: DISABLE_TELEMETRY ? { DISABLE_TELEMETRY: "1" } : {},
+    label: "google-maps-scraper binary",
+  });
 }
 
+async function runDockerScraper(opts, paths) {
+  const args = [
+    "run", "--rm",
+    ...(DISABLE_TELEMETRY ? ["-e", "DISABLE_TELEMETRY=1"] : []),
+    "-v", `${paths.tmpDir}:/out`,
+    "-v", `${paths.queryFile}:/queries.txt:ro`,
+    SCRAPER_IMAGE,
+    ...buildScraperArgs({
+      inputFile: "/queries.txt",
+      outputFile: "/out/results.json",
+      depth: opts.depth,
+      concurrency: opts.concurrency,
+      geo: opts.geo,
+      radiusMeters: opts.radiusMeters,
+      fastMode: opts.fastMode,
+    }),
+  ];
+
+  logger.info("Starting scraper Docker image", {
+    query: opts.query,
+    image: SCRAPER_IMAGE,
+    depth: opts.depth,
+    concurrency: opts.concurrency,
+    timeout: opts.timeout,
+    fastMode: opts.fastMode,
+  });
+
+  await runCommand("docker", args, { timeout: opts.timeout, label: "google-maps-scraper docker" });
+}
+
+/**
+ * Run gosom/google-maps-scraper for one controlled job.
+ *
+ * Modes:
+ * - SCRAPER_MODE=binary: run an installed google-maps-scraper binary.
+ * - SCRAPER_MODE=docker: run the gosom/google-maps-scraper Docker image.
+ * - SCRAPER_MODE=auto: prefer binary, fall back to Docker if available.
+ */
 export async function runScraper({
   query,
   depth = 1,
-  serviceLine = null,
-  city = null,
-  state = null,
+  concurrency = 1,
+  timeout,
   geo = null,
+  radiusMeters = null,
+  fastMode = false,
 }) {
-  const parsed = parseCityState(query);
-  const effectiveCity = city || parsed.city;
-  const effectiveState = (state || parsed.state || "").toUpperCase() || null;
-  const effectiveServiceLine = serviceLine || "occupational_health";
-  const pagesPerStrategy = Math.max(1, Math.min(parseInt(depth || "1", 10), 5));
-  const strategies = buildStrategies({
-    query,
-    serviceLine: effectiveServiceLine,
-    city: effectiveCity,
-    state: effectiveState,
-  });
+  const effectiveTimeout = timeout || SCRAPER_TIMEOUT_MS;
+  const tmpDir = await mkdtemp(join(tmpdir(), "provider-feeder-"));
+  const queryFile = join(tmpDir, "queries.txt");
+  const localOutFile = join(tmpDir, "results.json");
 
-  logger.info("Starting HTTP-only NPI feeder", {
-    query,
-    serviceLine: effectiveServiceLine,
-    city: effectiveCity,
-    state: effectiveState,
-    strategies: strategies.length,
-    pagesPerStrategy,
-    limit: NPI_LIMIT,
-    geocoding: ENABLE_CENSUS_GEOCODING,
-  });
+  await mkdir(tmpDir, { recursive: true });
+  await writeFile(queryFile, `${query}\n`, "utf8");
 
-  const seen = new Set();
-  const normalized = [];
-  const geocodeBudget = { remaining: MAX_GEOCODES_PER_JOB };
+  const opts = { query, depth, concurrency, timeout: effectiveTimeout, geo, radiusMeters, fastMode };
 
-  for (const strategy of strategies) {
-    for (let page = 0; page < pagesPerStrategy; page += 1) {
-      let payload;
-      try {
-        payload = await fetchNpiStrategy(strategy, { page, limit: NPI_LIMIT });
-      } catch (err) {
-        logger.warn("NPI Registry request failed", { strategy, page, error: err.message });
-        continue;
+  try {
+    if (SCRAPER_MODE === "binary") {
+      await runBinaryScraper(opts, { tmpDir, queryFile, localOutFile });
+    } else if (SCRAPER_MODE === "docker") {
+      await runDockerScraper(opts, { tmpDir, queryFile, localOutFile });
+    } else {
+      const hasBinary = await executableExists(SCRAPER_BINARY);
+      if (hasBinary) {
+        await runBinaryScraper(opts, { tmpDir, queryFile, localOutFile });
+      } else {
+        const hasDocker = await executableExists("docker");
+        if (!hasDocker) {
+          throw new Error(`No scraper runtime found. Install ${SCRAPER_BINARY}, set SCRAPER_BINARY, or run with Docker available.`);
+        }
+        await runDockerScraper(opts, { tmpDir, queryFile, localOutFile });
       }
-
-      const results = Array.isArray(payload?.results) ? payload.results : [];
-      for (const result of results) {
-        if (!result?.number || seen.has(result.number)) continue;
-        seen.add(result.number);
-        if (!isRelevant(result, effectiveServiceLine)) continue;
-        const mapped = await normalizeNpiResult(result, {
-          query,
-          serviceLine: effectiveServiceLine,
-          geo,
-          geocodeBudget,
-        });
-        if (mapped.title) normalized.push(mapped);
-      }
-
-      if (results.length < NPI_LIMIT) break;
-      if (NPI_REQUEST_DELAY_MS > 0) await sleep(NPI_REQUEST_DELAY_MS);
     }
-  }
 
-  logger.info("HTTP-only NPI feeder completed", { query, resultCount: normalized.length, seen: seen.size });
-  return normalized;
+    const results = await parseResultFile(localOutFile);
+    logger.info("Scraper completed", { query, resultCount: results.length });
+    return results;
+  } catch (err) {
+    logger.error("Scraper process failed", { query, error: err.message });
+    throw new Error(`Scraper failed: ${err.message}`);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
 }
