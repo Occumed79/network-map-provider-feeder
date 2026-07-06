@@ -1,7 +1,7 @@
 import { query, withTransaction, end } from "./db.js";
 import { runScraper } from "./scraper.js";
 import { logger } from "./logger.js";
-import { migrateSchema } from "./schema.js";
+import { validateSchema } from "./schema.js";
 import { ensureQueueBacklog } from "./jobSeeder.js";
 import {
   normalizePhone,
@@ -17,7 +17,7 @@ import {
 const POLL_INTERVAL = parseInt(process.env.WORKER_POLL_INTERVAL_MS || "30000", 10);
 const MAX_JOBS_PER_LOOP = parseInt(process.env.MAX_JOBS_PER_LOOP || "1", 10);
 const DEFAULT_CONCURRENCY = parseInt(process.env.DEFAULT_CONCURRENCY || "1", 10);
-const AUTO_MIGRATE_ON_START = process.env.AUTO_MIGRATE_ON_START !== "0";
+const VALIDATE_SCHEMA_ON_START = process.env.VALIDATE_SCHEMA_ON_START !== "0";
 const AUTO_SEED_ON_START = process.env.AUTO_SEED_ON_START === "1";
 const MIN_PENDING_JOBS = parseInt(process.env.MIN_PENDING_JOBS || "25", 10);
 const MAX_AUTO_SEED_JOBS = parseInt(process.env.MAX_AUTO_SEED_JOBS || "250", 10);
@@ -273,11 +273,11 @@ async function main() {
     pollInterval: POLL_INTERVAL,
     maxJobsPerLoop: MAX_JOBS_PER_LOOP,
     concurrency: DEFAULT_CONCURRENCY,
-    autoMigrate: AUTO_MIGRATE_ON_START,
+    validateSchema: VALIDATE_SCHEMA_ON_START,
     autoSeed: AUTO_SEED_ON_START,
   });
 
-  if (AUTO_MIGRATE_ON_START) await migrateSchema();
+  if (VALIDATE_SCHEMA_ON_START) await validateSchema();
   await resetStaleRunningJobs();
   await maybeSeedBacklog();
 

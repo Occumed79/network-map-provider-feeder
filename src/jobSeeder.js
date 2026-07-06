@@ -1,5 +1,6 @@
 import { query } from "./db.js";
 import { logger } from "./logger.js";
+import { getTableColumns } from "./schema.js";
 
 const SERVICE_LINES = [
   ["occupational_health", "occupational health clinic", 90],
@@ -130,6 +131,7 @@ export function buildTargetedJobs({ maxJobs = 250 } = {}) {
         region_name: city.region,
         service_line: service.key,
         priority: service.priority,
+        source: "auto_backlog",
         target_lat: city.lat,
         target_lng: city.lng,
         radius_meters: radiusMeters,
@@ -143,38 +145,45 @@ export function buildTargetedJobs({ maxJobs = 250 } = {}) {
   return jobs;
 }
 
+function buildProviderJobInsert(job, availableColumns) {
+  const entries = Object.entries(job).filter(([column, value]) => availableColumns.has(column) && value !== undefined);
+  const columns = entries.map(([column]) => column);
+  const values = entries.map(([, value]) => value);
+  const placeholders = values.map((_, index) => `$${index + 1}`);
+  const indexOf = (column) => columns.indexOf(column) + 1;
+
+  const conditions = ["lower(query) = lower($1)"];
+  if (indexOf("country_code") > 0) conditions.push(`country_code = $${indexOf("country_code")}`);
+  if (indexOf("region_name") > 0) conditions.push(`COALESCE(region_name, '') = COALESCE($${indexOf("region_name")}, '')`);
+  if (indexOf("service_line") > 0) conditions.push(`COALESCE(service_line, '') = COALESCE($${indexOf("service_line")}, '')`);
+
+  return {
+    text: `INSERT INTO provider_feeder_jobs (${columns.join(", ")})
+           SELECT ${placeholders.join(", ")}
+           WHERE NOT EXISTS (
+             SELECT 1 FROM provider_feeder_jobs
+             WHERE ${conditions.join(" AND ")}
+           )`,
+    values,
+    skippedColumns: Object.keys(job).filter((column) => !availableColumns.has(column)),
+  };
+}
+
 export async function seedTargetedJobs({ maxJobs = 250, source = "auto_seed" } = {}) {
-  const jobs = buildTargetedJobs({ maxJobs });
+  const jobs = buildTargetedJobs({ maxJobs }).map((job) => ({ ...job, source }));
+  const availableColumns = await getTableColumns("provider_feeder_jobs");
   let inserted = 0;
+  const skippedColumns = new Set();
 
   for (const job of jobs) {
-    const { rowCount } = await query(
-      `INSERT INTO provider_feeder_jobs
-        (query, country_code, region_name, service_line, priority, source,
-         target_lat, target_lng, radius_meters, scraper_depth, scraper_fast_mode)
-       SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11
-       WHERE NOT EXISTS (
-         SELECT 1 FROM provider_feeder_jobs
-         WHERE lower(query) = lower($1)
-           AND country_code = $2
-           AND COALESCE(region_name, '') = COALESCE($3, '')
-           AND COALESCE(service_line, '') = COALESCE($4, '')
-       )`,
-      [
-        job.query,
-        job.country_code,
-        job.region_name,
-        job.service_line,
-        job.priority,
-        source,
-        job.target_lat,
-        job.target_lng,
-        job.radius_meters,
-        job.scraper_depth,
-        job.scraper_fast_mode,
-      ]
-    );
+    const statement = buildProviderJobInsert(job, availableColumns);
+    statement.skippedColumns.forEach((column) => skippedColumns.add(column));
+    const { rowCount } = await query(statement.text, statement.values);
     inserted += rowCount;
+  }
+
+  if (skippedColumns.size) {
+    logger.warn("Seeding conformed to existing Neon provider_feeder_jobs columns", { skippedColumns: [...skippedColumns] });
   }
 
   logger.info("Targeted feeder jobs seeded", { attempted: jobs.length, inserted, source });
