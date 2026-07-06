@@ -1,4 +1,4 @@
-import argparse, csv, json, re, sys
+import argparse, csv, json, os, re, sys
 from collections import Counter
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]; SCRAPERS=ROOT/'scrapers'; sys.path.insert(0,str(SCRAPERS))
@@ -51,7 +51,7 @@ def score_row(row):
     if not (row.get('address') or row.get('phone') or row.get('email') or row.get('website') or row.get('sourceUrl') or row.get('lat')): return score,reasons,'missing location/contact/source evidence'
     return score,reasons,'below min score'
 def normalize_structured(raw,source_type,source_tag):
-    lower={norm(k):v for k,v in raw.items()}; row=empty_row(source_type,source_tag); row['evidenceNote']=json.dumps(raw,ensure_ascii=False)[:1500]; row['sourceUrl']=source_url(raw)
+    lower={norm(k):v for k,v in raw.items()}; row=empty_row(clean(raw.get('sourceType')) or source_type, clean(raw.get('sourceTag')) or source_tag); row['evidenceNote']=json.dumps(raw,ensure_ascii=False)[:1500]; row['sourceUrl']=source_url(raw)
     for field,aliases in LABELS.items():
         if field=='sourceUrl': continue
         for alias in aliases:
@@ -79,6 +79,40 @@ def block_row(block,source_type,source_tag):
         if not row['address'] and (ZIP_RE.search(line) or STATE_RE.search(line)) and any(c.isdigit() for c in line): row['address']=line
     found=has(block,ACCEPT); row['services']=row['services'] or '; '.join(found[:6])
     derive(row); return row
+
+def likely_text_record_start(line):
+    line=clean(line)
+    if not line or len(line)>160:
+        return False
+    if re.match(r'^[A-Za-z][A-Za-z /_.-]{1,35}\s*[:=]', line):
+        return False
+    low=line.lower()
+    if has(low,REJECT):
+        return True
+    if has(low,ACCEPT):
+        return True
+    if re.match(r"^[A-Z0-9][A-Za-z0-9 &'().,/+-]{2,120}$", line) and len(line.split())<=10 and not any(ch.isdigit() for ch in line):
+        return True
+    return False
+
+def text_blocks(text):
+    blocks=[b.strip() for b in re.split(r'\n\s*\n',text) if b.strip()]
+    if len(blocks)>1:
+        return blocks
+    split=[]; current=[]
+    for raw_line in text.splitlines():
+        line=clean(raw_line)
+        if not line:
+            continue
+        if current and likely_text_record_start(line):
+            split.append('\n'.join(current))
+            current=[line]
+        else:
+            current.append(line)
+    if current:
+        split.append('\n'.join(current))
+    return split or [text]
+
 def detect(path,requested):
     if requested!='auto': return requested
     if path.suffix.lower()=='.csv': return 'csv'
@@ -111,8 +145,8 @@ def read_rows(path,fmt,source_type,source_tag,limit=None):
             r=emit(normalize_structured(raw,source_type,source_tag))
             if r: yield r
     else:
-        text=path.read_text(encoding='utf-8',errors='replace').replace('\r\n','\n'); blocks=[b.strip() for b in re.split(r'\n\s*\n',text) if b.strip()] or [text]
-        for b in blocks:
+        text=path.read_text(encoding='utf-8',errors='replace').replace('\r\n','\n')
+        for b in text_blocks(text):
             r=emit(block_row(b,source_type,source_tag))
             if r: yield r
 def write_csv(path,fields,rows):
@@ -134,6 +168,8 @@ def main():
     if args.accepted_out: write_csv(args.accepted_out,ACCEPTED_FIELDS,accepted)
     if args.rejected_out: write_csv(args.rejected_out,REJECTED_FIELDS,rejected)
     written=skipped=0
+    if args.write and os.environ.get('SCRAPY_WRITE_TO_NEON') != '1':
+        raise SystemExit('--write requires SCRAPY_WRITE_TO_NEON=1')
     if args.write:
         for row in accepted:
             res=write_provider(row); written += 1 if res.get('status')=='written' else 0; skipped += 0 if res.get('status')=='written' else 1
