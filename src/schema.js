@@ -25,8 +25,8 @@ export async function validateSchema() {
   const requiredTables = [
     "provider_feeder_jobs",
     "google_maps_raw_results",
-    "provider_candidates",
-    "provider_candidate_sources",
+    "provider_feeder_candidates",
+    "provider_feeder_candidate_sources",
     "provider_feeder_runs",
   ];
 

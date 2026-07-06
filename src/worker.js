@@ -149,13 +149,13 @@ async function normalizeAndUpsertCandidates(client, jobId, job, rawRows) {
       address: r.address,
     });
 
-    const existing = await client.query("SELECT * FROM provider_candidates WHERE dedupe_key = $1", [dedupeKey]);
+    const existing = await client.query("SELECT * FROM provider_feeder_candidates WHERE dedupe_key = $1", [dedupeKey]);
     let candidateId;
 
     if (existing.rows.length) {
       candidateId = existing.rows[0].id;
       await client.query(
-        `UPDATE provider_candidates
+        `UPDATE provider_feeder_candidates
          SET name = COALESCE(NULLIF($1,''), name),
              normalized_name = COALESCE(NULLIF($2,''), normalized_name),
              category = COALESCE($3, category),
@@ -173,7 +173,7 @@ async function normalizeAndUpsertCandidates(client, jobId, job, rawRows) {
       let nearbyMatch = null;
       if (lat != null && lng != null) {
         const nearby = await client.query(
-          `SELECT * FROM provider_candidates
+          `SELECT * FROM provider_feeder_candidates
            WHERE country_code = $1
              AND latitude IS NOT NULL AND longitude IS NOT NULL
              AND latitude BETWEEN $2 - 0.002 AND $2 + 0.002
@@ -186,14 +186,14 @@ async function normalizeAndUpsertCandidates(client, jobId, job, rawRows) {
       if (nearbyMatch) {
         candidateId = nearbyMatch.id;
         await client.query(
-          `UPDATE provider_candidates
+          `UPDATE provider_feeder_candidates
            SET confidence_score = GREATEST(confidence_score, $1), updated_at = now()
            WHERE id = $2`,
           [confidence, candidateId]
         );
       } else {
         const ins = await client.query(
-          `INSERT INTO provider_candidates
+          `INSERT INTO provider_feeder_candidates
             (name, normalized_name, country_code, category, address,
              phone, website, latitude, longitude, confidence_score, status, dedupe_key)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'new',$11)
@@ -206,7 +206,7 @@ async function normalizeAndUpsertCandidates(client, jobId, job, rawRows) {
     }
 
     await client.query(
-      `INSERT INTO provider_candidate_sources (candidate_id, raw_result_id, job_id)
+      `INSERT INTO provider_feeder_candidate_sources (candidate_id, raw_result_id, job_id)
        VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
       [candidateId, rawRow.id, jobId]
     );
