@@ -21,6 +21,8 @@ services:
         value: 120
       - key: DISABLE_TELEMETRY
         value: 1
+      - key: ENABLE_SCHEMA_BOOTSTRAP
+        value: 1
       - key: VALIDATE_SCHEMA_ON_START
         value: 1
       - key: AUTO_SEED_ON_START
