@@ -3,8 +3,6 @@ FROM node:20-bookworm-slim
 WORKDIR /app
 
 ENV NODE_ENV=production \
-    SCRAPER_PROVIDER=parallel_mapped_http \
-    MAP_SOURCES=bing,google,apple \
     DISABLE_TELEMETRY=1 \
     PATH="/opt/venv/bin:$PATH"
 
