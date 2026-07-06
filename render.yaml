@@ -1,22 +1,45 @@
 services:
   - type: worker
     name: network-map-provider-feeder
-    runtime: node
-    buildCommand: npm install
-    startCommand: npm run worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    maxShutdownDelaySeconds: 120
     envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: NODE_ENV
+        value: production
       - key: DISABLE_TELEMETRY
+        value: "1"
+      - key: SCRAPER_MODE
+        value: binary
+      - key: SCRAPER_BINARY
+        value: google-maps-scraper
+      - key: SCRAPER_TIMEOUT_MS
+        value: "300000"
+      - key: SCRAPER_EXIT_ON_INACTIVITY
+        value: 3m
+      - key: DEFAULT_CONCURRENCY
         value: "1"
       - key: MAX_JOBS_PER_LOOP
         value: "1"
       - key: WORKER_POLL_INTERVAL_MS
         value: "30000"
-      - key: DEFAULT_CONCURRENCY
+      - key: AUTO_MIGRATE_ON_START
         value: "1"
-      - key: SCRAPER_IMAGE
-        value: "gosom/google-maps-scraper"
-      - key: SCRAPER_TIMEOUT_MS
-        value: "300000"
-      - key: DATABASE_URL
-        sync: false  # Set manually in Render dashboard
-    plan: starter
+      - key: AUTO_SEED_ON_START
+        value: "1"
+      - key: MIN_PENDING_JOBS
+        value: "25"
+      - key: MAX_AUTO_SEED_JOBS
+        value: "250"
+      - key: DEFAULT_RADIUS_METERS
+        value: "40000"
+      - key: DEFAULT_SCRAPER_DEPTH
+        value: "1"
+      - key: DEFAULT_FAST_MODE
+        value: "0"
+      - key: RESET_STALE_RUNNING_MINUTES
+        value: "120"

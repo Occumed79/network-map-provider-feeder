@@ -1,140 +1,119 @@
 # network-map-provider-feeder
 
-A **standalone feeder service** for the [Network Map](https://github.com/Occumed79) project. It runs controlled Google Maps extraction jobs, stores raw results, normalizes/deduplicates them into provider candidates, and writes everything to the **same Neon Postgres database** used by Network Map.
+Standalone feeder worker for Network Map. It runs controlled Google Maps extraction jobs, stores raw results, normalizes/deduplicates them into provider candidates, and writes to the same Neon Postgres database used by Network Map.
 
-> **This is a separate repository.** It does NOT modify or depend on the Network Map frontend. Network Map can later read the `provider_candidates` table to merge enriched provider data.
+This repo is intentionally separate from the Network Map frontend. Network Map can read `provider_candidates` later without this worker changing the UI.
+
+## What this pass finishes
+
+The repo is no longer just a parked Docker-only skeleton. It now has:
+
+- Render-ready Docker worker deployment.
+- Embedded `google-maps-scraper` binary runtime instead of Docker-in-Docker.
+- Automatic DB migration on worker startup.
+- Automatic targeted job seeding so the worker has a backlog to scrape.
+- Targeted occupational-health searches across major US cities.
+- Geo/radius job support through `target_lat`, `target_lng`, `radius_meters`, `scraper_depth`, and `scraper_fast_mode`.
+- Stale running-job recovery after deploys/restarts.
+- Binary, Docker, and auto scraper modes for Render/local use.
 
 ## Architecture
 
-```
-Google Maps scraper (gosom/google-maps-scraper)
+```text
+provider_feeder_jobs
         ↓
-  feeder worker (this repo)
+feeder worker
         ↓
-  Neon Postgres (shared DATABASE_URL)
-    ├── google_maps_raw_results   (raw scraper output)
-    ├── provider_candidates       (normalized, deduped)
-    └── provider_candidate_sources (link table)
+google-maps-scraper binary / Docker image
         ↓
-  Network Map reads provider_candidates (later, separately)
-```
-
-## What this service does
-
-- Polls `provider_feeder_jobs` for pending jobs
-- Runs `gosom/google-maps-scraper` in Docker for each job's query
-- Imports raw JSON results into `google_maps_raw_results`
-- Normalizes phone, website, name, lat/lon
-- Deduplicates into `provider_candidates` by:
-  1. `google_place_id`
-  2. `google_cid`
-  3. Normalized phone
-  4. Normalized website domain
-  5. Normalized name + address
-  6. Nearby lat/lon + similar name (fuzzy)
-- Marks each job completed or failed
-
-> **Important:** This is a **controlled, targeted enrichment** service. It only processes jobs that are explicitly seeded or queued. It does NOT perform uncontrolled national brute-force crawling.
-
-## Prerequisites
-
-- Node.js 18+
-- Docker (for running the Google Maps scraper)
-- A Neon Postgres database (the same one used by Network Map)
-
-## Quick start
-
-```bash
-# 1. Clone
-git clone https://github.com/Occumed79/network-map-provider-feeder.git
-cd network-map-provider-feeder
-
-# 2. Install dependencies
-npm install
-
-# 3. Configure environment
-cp .env.example .env
-# Edit .env and set DATABASE_URL to your Neon connection string
-
-# 4. Run migrations (creates tables in Neon)
-npm run migrate
-
-# 5. Verify database connectivity and tables
-npm run smoke
-
-# 6. Seed test jobs (small controlled batch)
-npm run seed
-
-# 7. Start the worker
-npm run worker
+google_maps_raw_results
+        ↓
+provider_candidates + provider_candidate_sources
+        ↓
+Network Map reads candidate data later
 ```
 
-## Environment variables
-
-| Variable | Description | Default |
-|---|---|---|
-| `DATABASE_URL` | Neon Postgres connection string (required) | — |
-| `DISABLE_TELEMETRY` | Disable scraper telemetry | `1` |
-| `MAX_JOBS_PER_LOOP` | Max jobs claimed per poll cycle | `1` |
-| `WORKER_POLL_INTERVAL_MS` | Milliseconds between polls when idle | `30000` |
-| `DEFAULT_CONCURRENCY` | Scraper concurrency (`-c` flag) | `1` |
-| `SCRAPER_IMAGE` | Docker image for the scraper | `gosom/google-maps-scraper` |
-| `SCRAPER_TIMEOUT_MS` | Scraper process timeout in ms | `300000` |
-
-## NPM scripts
-
-| Command | Description |
-|---|---|
-| `npm run migrate` | Run SQL migrations against Neon |
-| `npm run seed` | Insert a small test batch of jobs |
-| `npm run worker` | Start the background worker |
-| `npm run smoke` | Verify DB connectivity and table existence |
-
-## Database tables created
+## Tables
 
 | Table | Purpose |
 |---|---|
-| `provider_feeder_jobs` | Job queue: query, status, attempts, priority |
-| `google_maps_raw_results` | Raw scraper output per job |
-| `provider_candidates` | Normalized, deduplicated provider records |
-| `provider_candidate_sources` | Links candidates to raw source rows |
-| `provider_feeder_runs` | Per-job run log with counts and status |
+| `provider_feeder_jobs` | Controlled job queue with query, service line, geo/radius, status, and scraper settings. |
+| `google_maps_raw_results` | Raw scraper output per job. |
+| `provider_candidates` | Normalized/deduped provider records. |
+| `provider_candidate_sources` | Links candidates to raw source rows. |
+| `provider_feeder_runs` | Per-job run history. |
 
-## Verifying data landed in Neon
+## Key environment variables
 
-After running the worker on at least one job:
+| Variable | Default | Purpose |
+|---|---:|---|
+| `DATABASE_URL` | — | Neon connection string. Required. |
+| `SCRAPER_MODE` | `binary` | `binary`, `docker`, or `auto`. Render uses `binary`. |
+| `SCRAPER_BINARY` | `google-maps-scraper` | Binary name/path inside the container. |
+| `SCRAPER_TIMEOUT_MS` | `300000` | Per-job scraper timeout. |
+| `DEFAULT_CONCURRENCY` | `1` | Scraper concurrency. Keep low at first. |
+| `MAX_JOBS_PER_LOOP` | `1` | Jobs claimed per worker loop. |
+| `AUTO_MIGRATE_ON_START` | `1` | Run migration before polling. |
+| `AUTO_SEED_ON_START` | `1` | Keep the queue stocked with targeted jobs. |
+| `MIN_PENDING_JOBS` | `25` | Minimum active pending/running jobs before auto-seeding more. |
+| `MAX_AUTO_SEED_JOBS` | `250` | Max jobs inserted by an auto-seed pass. |
+| `TARGET_STATES` | blank | Optional comma list like `CA,TX,FL`. |
+| `TARGET_CITIES` | blank | Optional comma list like `Fresno CA,Pensacola FL`. |
+| `TARGET_SERVICE_LINES` | blank | Optional comma list of service keys. |
+| `DEFAULT_RADIUS_METERS` | `40000` | Radius passed to geo-capable scraper jobs. |
+| `DEFAULT_SCRAPER_DEPTH` | `1` | Scroll depth for seeded jobs. |
+| `DEFAULT_FAST_MODE` | `0` | Enable scraper fast mode for seeded jobs. |
+| `RESET_STALE_RUNNING_MINUTES` | `120` | Return stuck running jobs to pending after this many minutes. |
 
-```sql
--- Check job statuses
-SELECT id, query, status, attempts, created_at, completed_at
-FROM provider_feeder_jobs ORDER BY id;
+Service-line keys:
 
--- Check raw results
-SELECT count(*) FROM google_maps_raw_results;
-
--- Check normalized candidates
-SELECT id, name, country_code, confidence_score, status, dedupe_key
-FROM provider_candidates ORDER BY confidence_score DESC LIMIT 20;
-
--- Check run history
-SELECT * FROM provider_feeder_runs ORDER BY id DESC LIMIT 10;
+```text
+occupational_health
+occupational_medicine
+pre_employment
+dot_physical
+workers_comp
+physical_ability
+occupational_audiogram
+occupational_spirometry
 ```
 
-## Deploy on Render
+## Render deployment
 
-1. Create a new **Background Worker** service on [Render](https://render.com).
-2. Connect this GitHub repository.
-3. Set the build command: `npm install`
-4. Set the start command: `npm run worker`
-5. Add environment variable `DATABASE_URL` (your Neon connection string) in the Render dashboard.
-6. Add `DISABLE_TELEMETRY=1`.
-7. Deploy.
+Use the included `render.yaml`. The important part is:
 
-Alternatively, use the included `render.yaml` with Render Blueprints.
+```yaml
+runtime: docker
+```
 
-> **Note:** The worker needs Docker access to run the scraper. On Render, you may need to use a Docker-based deployment or a custom start command that runs the scraper binary directly. See [gosom/google-maps-scraper](https://github.com/gosom/google-maps-scraper) for binary options.
+The previous Node runtime could install Node dependencies, but it could not reliably run `gosom/google-maps-scraper` on Render. This Docker worker runs the scraper binary inside the same container.
 
-## Running with Docker Compose
+Required Render env var:
+
+```text
+DATABASE_URL=<your shared Neon connection string>
+```
+
+On startup the worker will:
+
+1. Run the DB migration.
+2. Reset stale running jobs.
+3. Seed a targeted backlog if needed.
+4. Poll jobs.
+5. Write raw rows and normalized provider candidates into Neon.
+
+## Local development
+
+```bash
+cp .env.example .env
+# Set DATABASE_URL in .env
+npm install
+npm run migrate
+npm run seed
+npm run worker
+```
+
+For Docker local testing:
 
 ```bash
 cp .env.example .env
@@ -142,29 +121,28 @@ cp .env.example .env
 docker compose up --build
 ```
 
-This mounts the Docker socket so the worker can spawn scraper containers.
+## Useful SQL checks
 
-## Local development
+```sql
+SELECT status, count(*)
+FROM provider_feeder_jobs
+GROUP BY status
+ORDER BY status;
 
-```bash
-npm install
-cp .env.example .env
-# Set DATABASE_URL
-npm run migrate
-npm run smoke
-npm run seed
-npm run worker
+SELECT count(*) FROM google_maps_raw_results;
+SELECT count(*) FROM provider_candidates;
+
+SELECT id, query, status, attempts, error, created_at, completed_at
+FROM provider_feeder_jobs
+ORDER BY id DESC
+LIMIT 25;
+
+SELECT name, address, phone, website, confidence_score, status
+FROM provider_candidates
+ORDER BY updated_at DESC
+LIMIT 25;
 ```
 
-The worker will poll for jobs, run the scraper in Docker, import results, and normalize candidates. Watch the console logs for progress.
+## Scope guardrail
 
-## Intentionally left for later
-
-- Geo/radius-based scraper queries (currently query-string only)
-- Multiple country support beyond US defaults
-- Web UI or API for job management
-- Scheduled/automated job creation
-- Scraper binary mode (non-Docker) for Render
-- Candidate merging workflow (Network Map side)
-- Rate limiting / throttling between jobs
-- Email/Slack notifications on failures
+This is still a controlled feeder. It does not brute-force every city or every business. It creates targeted occupational-health searches and grows the database job by job so Network Map can consume cleaner provider candidates later.
