@@ -5,6 +5,7 @@ import { runScraper } from "./scraper.js";
 import { logger } from "./logger.js";
 import { ensureFeederSchema, validateSchema } from "./schema.js";
 import { ensureQueueBacklog } from "./jobSeeder.js";
+import { writeAppCandidate, appCandidateWritesEnabled } from "./appCandidateWriter.js";
 import {
   normalizePhone,
   normalizeWebsite,
@@ -155,7 +156,9 @@ async function insertRawResults(client, jobId, job, results) {
 }
 
 async function normalizeAndUpsertCandidates(client, jobId, job, rawRows) {
-  let candidateCount = 0;
+  let feederCandidateCount = 0;
+  let appCandidateCount = 0;
+  let appCandidateAvailable = appCandidateWritesEnabled();
   for (const rawRow of rawRows) {
     const r = rawRow.mapped;
     if (!r.title) continue;
@@ -238,7 +241,7 @@ async function normalizeAndUpsertCandidates(client, jobId, job, rawRows) {
           [name, normalizedName, job.country_code, r.category, r.address, phone, website, lat, lng, confidence, dedupeKey]
         );
         candidateId = ins.rows[0].id;
-        candidateCount++;
+        feederCandidateCount++;
       }
     }
 
@@ -247,8 +250,13 @@ async function normalizeAndUpsertCandidates(client, jobId, job, rawRows) {
        VALUES ($1::bigint, $2::bigint, $3::bigint) ON CONFLICT DO NOTHING`,
       [candidateId, rawRow.id, jobId]
     );
+
+    const appWrite = await writeAppCandidate(client, { job, mapped: r, normalizedName, phone, website, lat, lng, confidence, dedupeKey });
+    appCandidateAvailable = appWrite.available !== false && appWrite.action !== "disabled";
+    if (["inserted", "updated", "existing"].includes(appWrite.action)) appCandidateCount++;
+
   }
-  return candidateCount;
+  return { feederCandidateCount, appCandidateCount, appCandidateAvailable };
 }
 
 async function processJob(job) {
@@ -277,11 +285,16 @@ async function processJob(job) {
 
     const result = await withTransaction(async (client) => {
       const rawRows = await insertRawResults(client, job.id, job, results);
-      const candidateCount = await normalizeAndUpsertCandidates(client, job.id, job, rawRows);
-      return { rawCount: rawRows.length, candidateCount };
+      const candidateResult = await normalizeAndUpsertCandidates(client, job.id, job, rawRows);
+      return { rawCount: rawRows.length, ...candidateResult };
+
     });
 
-    const warning = result.rawCount === 0 ? "No mapped results returned; job completed without crashing" : null;
+    const warning = result.rawCount === 0
+      ? "No mapped results returned; job completed without crashing"
+      : result.rawCount > 0 && result.appCandidateAvailable && result.appCandidateCount === 0
+        ? "Raw rows were written but no final app candidates were upserted"
+        : null;
     if (warning) {
       health.lastWarning = warning;
       logger.warn("Job completed with zero mapped results", { jobId: job.id, query: job.query });
@@ -294,10 +307,10 @@ async function processJob(job) {
       `UPDATE provider_feeder_runs
        SET finished_at = now(), status = 'completed', raw_count = $1::int, candidate_count = $2::int, error = $4::text
        WHERE id = $3::bigint`,
-      [result.rawCount, result.candidateCount, runId, warning]
+      [result.rawCount, result.appCandidateAvailable ? result.appCandidateCount : result.feederCandidateCount, runId, warning]
     );
     health.lastError = null;
-    logger.info("Job completed", { jobId: job.id, rawCount: result.rawCount, candidateCount: result.candidateCount, warning });
+    logger.info("Job completed", { jobId: job.id, rawCount: result.rawCount, feederCandidateCount: result.feederCandidateCount, appCandidateCount: result.appCandidateCount, appCandidateAvailable: result.appCandidateAvailable, warning });
   } catch (err) {
     logger.error("Job failed", { jobId: job.id, error: err.message });
     health.lastError = err.message;
@@ -325,9 +338,11 @@ async function maybeSeedBacklog() {
   if (AUTO_SEED_ON_START) {
     const result = await ensureQueueBacklog({ minPending: MIN_PENDING_JOBS, maxSeedJobs: MAX_AUTO_SEED_JOBS });
     health.queueSeeded = true;
+    health.lastSeedAttempt = { ...result, at: new Date().toISOString(), autoSeed: true };
     return result;
   }
-  return { attempted: 0, inserted: 0 };
+  health.lastSeedAttempt = { attempted: 0, inserted: 0, at: new Date().toISOString(), autoSeed: false };
+  return health.lastSeedAttempt;
 }
 
 async function main() {

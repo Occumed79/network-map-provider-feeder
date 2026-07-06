@@ -1,11 +1,11 @@
 import { query } from "./db.js";
+import { isValidSqlIdentifier } from "./appCandidateWriter.js";
+
+const CURRENT_SOURCES = ["bing_maps_http", "google_maps_http", "apple_maps_http"];
+const APP_TABLE = process.env.APP_CANDIDATE_TABLE || "provider_candidates";
 
 function response(statusCode, contentType, body) {
-  return {
-    statusCode,
-    headers: { "content-type": contentType, "cache-control": "no-store" },
-    body,
-  };
+  return { statusCode, headers: { "content-type": contentType, "cache-control": "no-store" }, body };
 }
 
 function json(statusCode, payload) {
@@ -13,109 +13,73 @@ function json(statusCode, payload) {
 }
 
 async function safeRows(sql, params = []) {
-  try {
-    const { rows } = await query(sql, params);
-    return rows;
-  } catch (err) {
-    return [{ error: err.message }];
-  }
+  try { return (await query(sql, params)).rows; } catch (err) { return [{ error: err.message }]; }
 }
+async function one(sql, params = []) { return (await safeRows(sql, params))[0] || {}; }
+async function tableExists(tableName) {
+  if (!isValidSqlIdentifier(tableName)) return false;
+  const row = await one("SELECT to_regclass($1::text) AS regclass", [`public.${tableName}`]);
+  return Boolean(row.regclass);
+}
+async function columns(tableName) {
+  if (!isValidSqlIdentifier(tableName)) return new Set();
+  const rows = await safeRows("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1", [tableName]);
+  return new Set(rows.map((r) => r.column_name).filter(Boolean));
+}
+function q(name) { return `"${name}"`; }
+function first(cols, names) { return names.find((n) => cols.has(n)); }
+function legacyErrorKind(error) { return /google-maps-scraper binary exited/i.test(error || "") ? "legacy_browser_scraper_error" : "error"; }
 
-async function one(sql, params = []) {
-  const rows = await safeRows(sql, params);
-  return rows[0] || {};
+async function recentAppCandidates(appTableExists) {
+  if (!appTableExists || !isValidSqlIdentifier(APP_TABLE)) return [];
+  const cols = await columns(APP_TABLE);
+  const select = [
+    first(cols, ["id"]) || "NULL AS id",
+    first(cols, ["name", "provider_name", "clinic_name", "title"]) || "NULL AS name",
+    first(cols, ["category", "provider_category", "primary_category", "service_line", "service_type"]) || "NULL AS category",
+    first(cols, ["address", "full_address", "street_address"]) || "NULL AS address",
+    first(cols, ["phone", "phone_number"]) || "NULL AS phone",
+    first(cols, ["website", "url"]) || "NULL AS website",
+    first(cols, ["confidence_score", "confidence"]) || "NULL AS confidence_score",
+    first(cols, ["updated_at", "created_at"]) || "NULL AS updated_at",
+  ].map((c) => c.includes(" AS ") ? c : `${q(c)} AS ${c === "provider_name" || c === "clinic_name" || c === "title" ? "name" : c}`).join(", ");
+  const order = first(cols, ["updated_at", "created_at", "id"]);
+  return safeRows(`SELECT ${select} FROM ${q(APP_TABLE)} ORDER BY ${q(order || [...cols][0])} DESC LIMIT 30`);
 }
 
 export async function loadDashboardData(health) {
-  const [jobCounts, runCounts, rawTotal, candidateTotal, sourceCounts, recentJobs, recentCandidates, recentErrors] = await Promise.all([
+  const appTableExists = await tableExists(APP_TABLE);
+  const showLegacy = process.env.DASHBOARD_SHOW_LEGACY === "1";
+  const currentSourceSql = `SELECT COALESCE(raw->>'source','unknown') AS source, count(*)::int AS count FROM google_maps_raw_results WHERE COALESCE(raw->>'source','unknown') = ANY($1::text[]) GROUP BY 1 ORDER BY count DESC, source ASC`;
+  const legacySourceSql = `SELECT COALESCE(raw->>'source','unknown') AS source, count(*)::int AS count FROM google_maps_raw_results WHERE NOT (COALESCE(raw->>'source','unknown') = ANY($1::text[])) GROUP BY 1 ORDER BY count DESC, source ASC LIMIT 20`;
+  const [jobCounts, runCounts, rawTotal, feederTotal, appTotal, currentSourceCounts, legacySourceCounts, recentJobs, recentFeeder, recentErrorsRaw, legacyErrorsRaw, recentApp] = await Promise.all([
     safeRows(`SELECT status, count(*)::int AS count FROM provider_feeder_jobs GROUP BY status ORDER BY status`),
     safeRows(`SELECT status, count(*)::int AS count FROM provider_feeder_runs GROUP BY status ORDER BY status`),
     one(`SELECT count(*)::int AS count FROM google_maps_raw_results`),
     one(`SELECT count(*)::int AS count FROM provider_feeder_candidates`),
-    safeRows(`
-      SELECT COALESCE(raw->>'source', 'unknown') AS source, count(*)::int AS count
-      FROM google_maps_raw_results
-      GROUP BY 1
-      ORDER BY count DESC, source ASC
-      LIMIT 20
-    `),
-    safeRows(`
-      SELECT id, query, service_line, region_name, status, attempts, max_attempts, error,
-             created_at, started_at, completed_at
-      FROM provider_feeder_jobs
-      ORDER BY COALESCE(started_at, completed_at, created_at) DESC
-      LIMIT 30
-    `),
-    safeRows(`
-      SELECT id, name, category, address, phone, website, confidence_score, status, updated_at
-      FROM provider_feeder_candidates
-      ORDER BY updated_at DESC
-      LIMIT 30
-    `),
-    safeRows(`
-      SELECT id, query, status, attempts, error, completed_at, started_at
-      FROM provider_feeder_jobs
-      WHERE error IS NOT NULL
-      ORDER BY COALESCE(completed_at, started_at, created_at) DESC
-      LIMIT 25
-    `),
+    appTableExists ? one(`SELECT count(*)::int AS count FROM ${q(APP_TABLE)}`) : { count: 0 },
+    safeRows(currentSourceSql, [CURRENT_SOURCES]),
+    safeRows(legacySourceSql, [CURRENT_SOURCES]),
+    safeRows(`SELECT id, query, service_line, region_name, status, attempts, max_attempts, error, created_at, started_at, completed_at FROM provider_feeder_jobs ORDER BY COALESCE(started_at, completed_at, created_at) DESC LIMIT 30`),
+    safeRows(`SELECT id, name, category, address, phone, website, confidence_score, status, updated_at FROM provider_feeder_candidates ORDER BY updated_at DESC LIMIT 30`),
+    safeRows(`SELECT id, query, status, attempts, error, completed_at, started_at FROM provider_feeder_jobs WHERE error IS NOT NULL AND (error NOT ILIKE '%google-maps-scraper binary exited%') AND COALESCE(completed_at, started_at, created_at) >= $1::timestamptz ORDER BY COALESCE(completed_at, started_at, created_at) DESC LIMIT 25`, [health.startedAt]),
+    showLegacy ? safeRows(`SELECT id, query, status, attempts, error, completed_at, started_at FROM provider_feeder_jobs WHERE error ILIKE '%google-maps-scraper binary exited%' OR COALESCE(completed_at, started_at, created_at) < $1::timestamptz ORDER BY COALESCE(completed_at, started_at, created_at) DESC LIMIT 25`, [health.startedAt]) : [],
+    recentAppCandidates(appTableExists),
   ]);
-
-  return {
-    ok: true,
-    generatedAt: new Date().toISOString(),
-    env: {
-      provider: process.env.SCRAPER_PROVIDER || "parallel_mapped_http",
-      mapSources: process.env.MAP_SOURCES || "bing,google,apple",
-      maxJobsPerLoop: process.env.MAX_JOBS_PER_LOOP || "1",
-      maxResultsPerJob: process.env.MAX_RESULTS_PER_JOB || "120",
-    },
-    health,
-    totals: {
-      rawResults: rawTotal.count || 0,
-      candidates: candidateTotal.count || 0,
-    },
-    jobCounts,
-    runCounts,
-    sourceCounts,
-    recentJobs,
-    recentCandidates,
-    recentErrors,
-  };
+  const warnings = [];
+  if (process.env.ENABLE_APP_CANDIDATE_WRITE !== "1") warnings.push("ENABLE_APP_CANDIDATE_WRITE is disabled; final provider_candidates writes are off.");
+  if (!appTableExists) warnings.push(`${APP_TABLE} is missing or unavailable; showing feeder staging only.`);
+  if ((rawTotal.count || 0) > 0 && appTableExists && (appTotal.count || 0) === 0) warnings.push("Raw mapped rows exist but final app candidates are still zero.");
+  if (legacySourceCounts.some((r) => r.source === "npi_registry")) warnings.push("Legacy npi_registry rows exist and are separated from current source counts.");
+  return { ok: true, generatedAt: new Date().toISOString(), env: { provider: process.env.SCRAPER_PROVIDER || "parallel_mapped_http", mapSources: process.env.MAP_SOURCES || "bing,google,apple", appCandidateWrite: process.env.ENABLE_APP_CANDIDATE_WRITE === "1", appCandidateTable: APP_TABLE, appCandidateTableExists: appTableExists, autoSeed: process.env.AUTO_SEED_ON_START === "1", minPendingJobs: process.env.MIN_PENDING_JOBS || "25", maxAutoSeedJobs: process.env.MAX_AUTO_SEED_JOBS || "250", dashboardShowLegacy: showLegacy }, health, warnings, totals: { appCandidates: appTotal.count || 0, feederStaging: feederTotal.count || 0, rawResults: rawTotal.count || 0 }, jobCounts, runCounts, currentSourceCounts, legacySourceCounts, recentJobs, recentAppCandidates: recentApp, recentFeederCandidates: recentFeeder, recentErrors: recentErrorsRaw.map((r) => ({ ...r, error_kind: legacyErrorKind(r.error) })), legacyErrors: legacyErrorsRaw.map((r) => ({ ...r, error_kind: legacyErrorKind(r.error) })) };
 }
 
-function dashboardHtml() {
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Provider Feeder</title>
-<style>
-:root{color-scheme:dark;--bg:#07111f;--p:rgba(15,27,45,.82);--b:rgba(125,211,252,.22);--t:#e5f3ff;--m:#94a3b8;--g:#34d399;--w:#fbbf24;--r:#fb7185;--c:#38bdf8}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 12% 0,rgba(56,189,248,.22),transparent 34rem),radial-gradient(circle at 88% 0,rgba(52,211,153,.16),transparent 30rem),linear-gradient(135deg,#020617,var(--bg));color:var(--t);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}header{padding:32px clamp(18px,4vw,54px) 16px;display:flex;justify-content:space-between;gap:16px;align-items:flex-start}h1{font-size:clamp(30px,4vw,50px);letter-spacing:-.045em;margin:0}.sub{color:var(--m);margin-top:8px}.badge{border:1px solid var(--b);background:rgba(56,189,248,.1);border-radius:999px;padding:8px 12px;color:#bae6fd;white-space:nowrap}main{padding:0 clamp(18px,4vw,54px) 54px}.grid{display:grid;gap:16px}.cards{grid-template-columns:repeat(6,minmax(0,1fr))}.cols{grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr);margin-top:16px}.card,.panel{border:1px solid var(--b);background:linear-gradient(180deg,var(--p),rgba(6,15,28,.88));border-radius:22px;box-shadow:0 24px 70px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.06);backdrop-filter:blur(14px)}.card{padding:18px;min-height:108px}.label{color:var(--m);font-size:12px;text-transform:uppercase;letter-spacing:.12em}.value{font-size:32px;font-weight:780;margin-top:8px;letter-spacing:-.04em}.hint{color:var(--m);font-size:13px;margin-top:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.panel{padding:18px;overflow:hidden}.panel h2{font-size:17px;margin:0 0 12px}table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;color:var(--m);font-weight:650;border-bottom:1px solid var(--b);padding:10px 8px}td{border-bottom:1px solid rgba(148,163,184,.12);padding:10px 8px;vertical-align:top}tr:hover td{background:rgba(56,189,248,.05)}.scroll{overflow:auto;max-height:520px}.pill{border:1px solid rgba(148,163,184,.24);border-radius:999px;padding:3px 8px;background:rgba(15,23,42,.62)}.pending{color:var(--w)}.running{color:var(--c)}.completed{color:var(--g)}.failed{color:var(--r)}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.err{color:#fecdd3;max-width:460px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.empty{color:var(--m);padding:14px 4px}@media(max-width:1180px){.cards{grid-template-columns:repeat(3,minmax(0,1fr))}.cols{grid-template-columns:1fr}}@media(max-width:720px){header{flex-direction:column}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.value{font-size:26px}}
-</style>
-</head>
-<body>
-<header><div><h1>Provider Feeder</h1><div class="sub">Parallel mapped-source scraper feeding Neon. Sources: <span id="sources">loading</span></div></div><div class="badge" id="status">loading</div></header>
-<main><section class="grid cards" id="cards"></section><section class="grid cols"><div class="panel"><h2>Recent Jobs</h2><div class="scroll" id="jobs"></div></div><div class="panel"><h2>Source Counts</h2><div id="sourceCounts"></div></div></section><section class="grid cols"><div class="panel"><h2>Newest Candidates</h2><div class="scroll" id="candidates"></div></div><div class="panel"><h2>Recent Errors</h2><div class="scroll" id="errors"></div></div></section></main>
-<script>
-const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const fmt=v=>v?new Date(v).toLocaleString():'';
-const count=(rows,s)=>(rows||[]).find(r=>r.status===s)?.count||0;
-const card=(l,v,h='')=>'<div class="card"><div class="label">'+esc(l)+'</div><div class="value">'+esc(v)+'</div><div class="hint">'+esc(h)+'</div></div>';
-function table(headers, rows, mapper){if(!rows||!rows.length)return '<div class="empty">No rows yet.</div>';return '<table><thead><tr>'+headers.map(h=>'<th>'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+mapper(r).map(c=>'<td>'+c+'</td>').join('')+'</tr>').join('')+'</tbody></table>'}
-async function refresh(){const res=await fetch('/api/dashboard',{cache:'no-store'});const d=await res.json();document.getElementById('status').textContent=d.health.status+(d.health.ready?' / ready':'');document.getElementById('sources').textContent=d.env.mapSources;document.getElementById('cards').innerHTML=[card('Candidates',d.totals.candidates,'normalized provider rows'),card('Raw Results',d.totals.rawResults,'mapped source rows'),card('Pending',count(d.jobCounts,'pending'),'jobs waiting'),card('Running',count(d.jobCounts,'running'),'currently claimed'),card('Completed',count(d.jobCounts,'completed'),'finished jobs'),card('Failed',count(d.jobCounts,'failed'),d.health.lastError||'no latest error')].join('');document.getElementById('jobs').innerHTML=table(['ID','Status','Query','Attempts','Updated'],d.recentJobs,r=>['<span class="mono">'+esc(r.id)+'</span>','<span class="pill '+esc(r.status)+'">'+esc(r.status)+'</span>',esc(r.query),esc((r.attempts||0)+'/'+(r.max_attempts||'')),esc(fmt(r.completed_at||r.started_at||r.created_at))]);document.getElementById('sourceCounts').innerHTML=table(['Source','Rows'],d.sourceCounts,r=>[esc(r.source),'<span class="mono">'+esc(r.count)+'</span>']);document.getElementById('candidates').innerHTML=table(['Name','Category','Address','Confidence'],d.recentCandidates,r=>[esc(r.name),esc(r.category||''),esc(r.address||''),'<span class="mono">'+esc(Number(r.confidence_score||0).toFixed(2))+'</span>']);document.getElementById('errors').innerHTML=table(['Job','Status','Error'],d.recentErrors,r=>['<span class="mono">'+esc(r.id)+'</span>','<span class="pill '+esc(r.status)+'">'+esc(r.status)+'</span>','<div class="err">'+esc(r.error||'')+'</div>'])}
-refresh().catch(e=>{document.getElementById('status').textContent='dashboard error';console.error(e)});setInterval(refresh,15000);
-</script>
-</body>
-</html>`;
-}
+function dashboardHtml() { return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Provider Feeder</title><style>:root{color-scheme:dark;--bg:#07111f;--p:rgba(15,27,45,.82);--b:rgba(125,211,252,.22);--t:#e5f3ff;--m:#94a3b8;--g:#34d399;--w:#fbbf24;--r:#fb7185;--c:#38bdf8}*{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#020617,var(--bg));color:var(--t);font-family:system-ui,sans-serif}header,main{padding:24px clamp(18px,4vw,54px)}h1{margin:0;font-size:42px}.sub,.hint,.empty{color:var(--m)}.badge{border:1px solid var(--b);border-radius:999px;padding:8px 12px;color:#bae6fd}.top{display:flex;justify-content:space-between;gap:16px}.grid{display:grid;gap:16px}.cards{grid-template-columns:repeat(6,minmax(0,1fr))}.cols{grid-template-columns:1fr 1fr;margin-top:16px}.card,.panel,.warn{border:1px solid var(--b);background:var(--p);border-radius:18px;padding:16px}.warn{border-color:rgba(251,191,36,.5);background:rgba(251,191,36,.08);margin-bottom:16px}.label{color:var(--m);font-size:12px;text-transform:uppercase;letter-spacing:.12em}.value{font-size:30px;font-weight:800}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;border-bottom:1px solid rgba(148,163,184,.16);padding:8px;vertical-align:top}.scroll{overflow:auto;max-height:430px}.pill{border:1px solid rgba(148,163,184,.24);border-radius:999px;padding:3px 8px}.completed{color:var(--g)}.failed{color:var(--r)}.running{color:var(--c)}.pending{color:var(--w)}.mono{font-family:monospace}.err{color:#fecdd3;max-width:520px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}@media(max-width:1100px){.cards{grid-template-columns:repeat(3,1fr)}.cols{grid-template-columns:1fr}}@media(max-width:680px){.cards{grid-template-columns:repeat(2,1fr)}.top{display:block}}</style></head><body><header class="top"><div><h1>Provider Feeder</h1><div class="sub">Mapped-source feeder. Sources: <span id="sources">loading</span></div></div><div class="badge" id="status">loading</div></header><main><div id="warnings"></div><section class="grid cards" id="cards"></section><section class="grid cols"><div class="panel"><h2>Recent Jobs</h2><div class="scroll" id="jobs"></div></div><div class="panel"><h2>Current Source Counts</h2><div id="sourceCounts"></div><h2>Legacy Source Counts</h2><div id="legacySources"></div></div></section><section class="grid cols"><div class="panel"><h2>Recent App Candidates</h2><div class="scroll" id="appCandidates"></div></div><div class="panel"><h2>Recent Feeder Staging Candidates</h2><div class="scroll" id="feederCandidates"></div></div></section><section class="grid cols"><div class="panel"><h2>Recent Errors</h2><div class="scroll" id="errors"></div></div><div class="panel"><h2>Legacy Errors</h2><div class="scroll" id="legacyErrors"></div></div></section></main><script>const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=v=>v?new Date(v).toLocaleString():'';const count=(rows,s)=>(rows||[]).find(r=>r.status===s)?.count||0;const card=(l,v,h='')=>'<div class="card"><div class="label">'+esc(l)+'</div><div class="value">'+esc(v)+'</div><div class="hint">'+esc(h)+'</div></div>';function table(h,rows,map){if(!rows||!rows.length)return '<div class="empty">No rows.</div>';return '<table><thead><tr>'+h.map(x=>'<th>'+esc(x)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+map(r).map(c=>'<td>'+c+'</td>').join('')+'</tr>').join('')+'</tbody></table>'}async function refresh(){const d=await (await fetch('/api/dashboard',{cache:'no-store'})).json();status.textContent=d.health.status+(d.health.ready?' / ready':'');sources.textContent=d.env.mapSources;warnings.innerHTML=(d.warnings||[]).map(w=>'<div class="warn">⚠️ '+esc(w)+'</div>').join('');cards.innerHTML=[card('App Candidates',d.totals.appCandidates,'final app-facing provider rows'),card('Feeder Staging',d.totals.feederStaging,'staging/dedupe rows'),card('Raw Mapped Results',d.totals.rawResults,'raw mapped-source rows'),card('Pending',count(d.jobCounts,'pending'),'jobs waiting'),card('Running',count(d.jobCounts,'running'),'currently claimed'),card('Completed',count(d.jobCounts,'completed'),'finished jobs')].join('');jobs.innerHTML=table(['ID','Status','Query','Attempts','Updated'],d.recentJobs,r=>['<span class="mono">'+esc(r.id)+'</span>','<span class="pill '+esc(r.status)+'">'+esc(r.status)+'</span>',esc(r.query),esc((r.attempts||0)+'/'+(r.max_attempts||'')),esc(fmt(r.completed_at||r.started_at||r.created_at))]);sourceCounts.innerHTML=table(['Source','Rows'],d.currentSourceCounts,r=>[esc(r.source),'<span class="mono">'+esc(r.count)+'</span>']);legacySources.innerHTML=table(['Source','Rows'],d.legacySourceCounts,r=>[esc(r.source),'<span class="mono">'+esc(r.count)+'</span>']);const cand=(rows)=>table(['Name','Category','Address','Confidence'],rows,r=>[esc(r.name),esc(r.category||''),esc(r.address||''),'<span class="mono">'+esc(Number(r.confidence_score||0).toFixed(2))+'</span>']);appCandidates.innerHTML=cand(d.recentAppCandidates);feederCandidates.innerHTML=cand(d.recentFeederCandidates);const errs=(rows)=>table(['Job','Kind','Error'],rows,r=>['<span class="mono">'+esc(r.id)+'</span>',esc(r.error_kind||'error'),'<div class="err">'+esc(r.error||'')+'</div>']);errors.innerHTML=errs(d.recentErrors);legacyErrors.innerHTML=errs(d.legacyErrors)}refresh().catch(e=>{status.textContent='dashboard error';console.error(e)});setInterval(refresh,15000);</script></body></html>`; }
 
 export async function handleDashboardRequest(req, health) {
   const url = new URL(req.url || "/", "http://localhost");
-  const path = url.pathname;
-  if (path === "/" || path === "/dashboard") return response(200, "text/html; charset=utf-8", dashboardHtml());
-  if (["/health", "/healthz", "/status"].includes(path)) return json(200, { ok: true, service: "network-map-provider-feeder", ...health });
-  if (path === "/api/dashboard" || path === "/api/status") return json(200, await loadDashboardData(health));
+  if (url.pathname === "/" || url.pathname === "/dashboard") return response(200, "text/html; charset=utf-8", dashboardHtml());
+  if (["/health", "/healthz", "/status"].includes(url.pathname)) return json(200, { ok: true, service: "network-map-provider-feeder", ...health });
+  if (url.pathname === "/api/dashboard" || url.pathname === "/api/status") return json(200, await loadDashboardData(health));
   return json(404, { ok: false, error: "not_found" });
 }

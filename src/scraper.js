@@ -112,8 +112,10 @@ async function fetchText(url) {
         "user-agent": MAP_HTTP_USER_AGENT,
       },
     });
+    const text = await response.text();
     if (!response.ok) throw new Error(`HTTP ${response.status} from ${url.hostname}`);
-    return await response.text();
+    return { text, status: response.status };
+
   } finally {
     clearTimeout(timer);
   }
@@ -156,6 +158,10 @@ function extractJsonLd(html, source) {
   return rows;
 }
 
+function countJsonLdBlocks(html) {
+  return (html.match(/<script[^>]+type=["\']application\/ld\+json["\'][^>]*>/gi) || []).length;
+}
+
 function chunkAroundMatches(html, needles) {
   const chunks = [];
   for (const needle of needles) {
@@ -171,7 +177,7 @@ function chunkAroundMatches(html, needles) {
   return chunks;
 }
 
-function extractLooseMapResults(html, source) {
+function extractLooseMapResults(html, source, diagnostics = null) {
   const chunks = chunkAroundMatches(html, [
     "entityTitle",
     "businessName",
@@ -183,6 +189,7 @@ function extractLooseMapResults(html, source) {
     "place_id",
     "cid",
   ]);
+  if (diagnostics) diagnostics.looseChunks = chunks.length;
 
   const results = [];
   for (const chunk of chunks) {
@@ -244,12 +251,47 @@ function extractLooseMapResults(html, source) {
   return results;
 }
 
+
+const GENERIC_TITLES = new Set(["apple maps", "google maps", "bing maps", "maps", "directions", "search", "results", "organization"]);
+const PROVIDER_TERMS = ["occupational", "medicine", "health", "clinic", "urgent care", "medical", "work injury", "workers comp", "dot", "physical", "audiogram", "spirometry", "pulmonary", "employee health", "industrial medicine"];
+
+function validCoords(result) {
+  return Number.isFinite(Number(result.latitude)) && Number.isFinite(Number(result.longitude)) && Math.abs(Number(result.latitude)) <= 90 && Math.abs(Number(result.longitude)) <= 180;
+}
+
+function providerLookingName(result) {
+  const text = [result.title, result.category, result.website].filter(Boolean).join(" ").toLowerCase();
+  return PROVIDER_TERMS.some((term) => text.includes(term));
+}
+
+function rejectionReason(result) {
+  const title = normalizeWhitespace(result.title).toLowerCase();
+  const category = normalizeWhitespace(result.category).toLowerCase();
+  const score = result.source_score ?? 0;
+  if (!title) return "missing_title";
+  if (GENERIC_TITLES.has(title)) return "generic_map_title";
+  if ([...GENERIC_TITLES].some((generic) => title === generic || title.startsWith(`${generic} -`) || title.endsWith(` ${generic}`))) return "approx_generic_title";
+  if (category === "organization" && /^(apple|google|bing)?\s*maps?$/i.test(result.title || "")) return "platform_category_only";
+  const hasUsefulContact = Boolean(result.address || result.phone || result.website || validCoords(result));
+  if (!hasUsefulContact) return "no_contact_or_coordinates";
+  if (!result.address && !result.phone && !result.website && !(validCoords(result) && providerLookingName(result))) return "coords_without_provider_name";
+  if (GENERIC_TITLES.has(category) && score < 3) return "generic_low_score";
+  if (/^(clinic|medical|health|organization|result|place)$/i.test(result.title || "") && score < 3) return "too_generic_low_score";
+  return null;
+}
+
+function summarizeReasons(reasons) {
+  const counts = new Map();
+  for (const reason of reasons) counts.set(reason, (counts.get(reason) || 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([reason, count]) => ({ reason, count }));
+}
+
 function scoreResult(result, query) {
   const q = query.toLowerCase();
   const text = [result.title, result.category, result.address, result.website].filter(Boolean).join(" ").toLowerCase();
   let score = 0;
-  for (const term of ["occupational", "clinic", "medical", "urgent", "health", "workers", "dot", "physical", "audiogram", "spirometry"]) {
-    if (q.includes(term) && text.includes(term)) score += 2;
+  for (const term of PROVIDER_TERMS) {
+    if (text.includes(term)) score += q.includes(term) ? 2 : 1;
   }
   if (result.phone) score += 1;
   if (result.address) score += 2;
@@ -258,9 +300,9 @@ function scoreResult(result, query) {
   return score;
 }
 
-function normalizeResults(results, { query, source }) {
+function normalizeResults(results, { query, source, diagnostics = null }) {
+  const rejections = [];
   const filtered = results
-    .filter((result) => result.title)
     .map((result) => ({
       ...result,
       source: `${source}_maps_http`,
@@ -272,20 +314,38 @@ function normalizeResults(results, { query, source }) {
       source_query: query,
       source_score: scoreResult(result, query),
     }))
-    .filter((result) => result.source_score >= 1)
+    .filter((result) => {
+      const reason = rejectionReason(result) || (result.source_score < 1 ? "low_source_score" : null);
+      if (reason) {
+        rejections.push(reason);
+        return false;
+      }
+      return true;
+    })
     .sort((a, b) => b.source_score - a.source_score);
 
-  return uniqBy(filtered, (result) => `${result.title}|${result.address || result.phone || result.website || result.place_id}`.toLowerCase())
+  const normalized = uniqBy(filtered, (result) => `${result.title}|${result.address || result.phone || result.website || result.place_id}`.toLowerCase())
     .slice(0, MAX_RESULTS_PER_SOURCE);
+  if (diagnostics) {
+    diagnostics.accepted = normalized.length;
+    diagnostics.rejected = rejections.length;
+    diagnostics.topRejectionReasons = summarizeReasons(rejections);
+  }
+  return normalized;
 }
 
 async function scrapeSource(source, { query, geo, radiusMeters }) {
   const url = buildSourceUrl(source, query, geo, radiusMeters);
   logger.info("Fetching mapped source", { source, query, url: url.toString() });
-  const html = await fetchText(url);
-  const rows = [...extractJsonLd(html, source), ...extractLooseMapResults(html, source)];
-  const results = normalizeResults(rows, { query, source });
-  logger.info("Mapped source parsed", { source, query, parsed: rows.length, accepted: results.length });
+  const { text: html, status } = await fetchText(url);
+  const diagnostics = { source, query, httpStatus: status, htmlLength: html.length, jsonLdBlocks: countJsonLdBlocks(html), looseChunks: 0, parsed: 0, accepted: 0, rejected: 0, topRejectionReasons: [] };
+  const rows = [...extractJsonLd(html, source), ...extractLooseMapResults(html, source, diagnostics)];
+  diagnostics.parsed = rows.length;
+  const results = normalizeResults(rows, { query, source, diagnostics }).map((result) => ({
+    ...result,
+    raw: { ...(result.raw || {}), diagnostics: { source, httpStatus: status, source_score: result.source_score } },
+  }));
+  logger.info("Mapped source parsed", diagnostics);
   return results;
 }
 

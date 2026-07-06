@@ -25,6 +25,12 @@ services:
         value: 1
       - key: VALIDATE_SCHEMA_ON_START
         value: 1
+      - key: DASHBOARD_SHOW_LEGACY
+        value: 0
+      - key: APP_CANDIDATE_TABLE
+        value: provider_candidates
+      - key: ENABLE_APP_CANDIDATE_WRITE
+        value: 1
       - key: AUTO_SEED_ON_START
         value: 1
       - key: MIN_PENDING_JOBS
