@@ -1,11 +1,7 @@
 import { logger } from "./logger.js";
 
-const DEFAULT_PROVIDER = "free_npi_registry";
-const ALLOWED_FREE_PROVIDERS = new Set([
-  DEFAULT_PROVIDER,
-  "npi_registry",
-  "cms_npi_registry",
-]);
+const DEFAULT_PROVIDER = "free_google_maps_scraper";
+const ALLOWED_FREE_PROVIDERS = new Set([DEFAULT_PROVIDER, "google_maps_scraper", "gosom_google_maps_scraper"]);
 
 export function enforceSourcePolicy() {
   const freeOnlyMode = process.env.FREE_ONLY_MODE !== "0";
