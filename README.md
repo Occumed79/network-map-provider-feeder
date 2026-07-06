@@ -1,26 +1,34 @@
 # Network Map Provider Feeder
 
-Render dashboard and Scrapy-capable crawler ingestion service for the Network Map provider database.
+Render dashboard, Scrapy crawler ingestion, and provider-file cleanup tools for the Network Map provider database.
 
-This repo no longer uses the old Bing/Google/Apple HTML map parser. The old map worker loop and source-policy files have been removed. Provider growth now comes from Scrapy crawlers that extract clinic/location/provider rows from configured public directory pages and write them into Neon.
+This repo no longer uses the old Bing/Google/Apple HTML map parser. The old map worker loop and source-policy files have been removed. Provider growth now comes from crawler configs and import tools that write cleaned provider rows into Neon.
 
 ## Current shape
 
 - Runtime: Docker web service with Node dashboard and Python/Scrapy runtime installed.
 - Deployment target: Render web service.
-- Primary ingestion: Scrapy crawler configs under `scrapers/`.
+- Primary ingestion paths: Scrapy crawler configs and provider file imports.
 - Database: existing Neon Postgres database.
 - Final output: `provider_candidates`.
 - Staging/dedupe: `provider_feeder_candidates`.
-- Raw/source evidence: `google_maps_raw_results` with `raw.source = scrapy_directory` for crawler rows.
+- Raw/source evidence: `google_maps_raw_results`.
 - UI: built-in dashboard served from `/` and `/dashboard`.
 - Health/API endpoints: `/health`, `/healthz`, `/status`, `/api/dashboard`.
 
-## Current flow
+## Current flows
 
 ```text
 clinic directory pages / location pages
 → Scrapy spider extracts provider rows
+→ google_maps_raw_results
+→ provider_feeder_candidates
+→ provider_candidates
+```
+
+```text
+messy txt/csv/json/jsonl provider dumps
+→ import_provider_text.py cleans provider-looking rows
 → google_maps_raw_results
 → provider_feeder_candidates
 → provider_candidates
@@ -31,11 +39,13 @@ clinic directory pages / location pages
 1. Starts the dashboard and health endpoints.
 2. Bootstraps feeder-owned Neon tables when enabled.
 3. Validates required Neon tables.
-4. Shows app candidates, staging candidates, raw rows, current Scrapy source counts, and separated legacy source counts.
+4. Shows app candidates, staging candidates, raw rows, current source counts, and separated legacy source counts.
 
 It does **not** run the old map job queue anymore.
 
-## What Scrapy does
+## Ingestion modes
+
+### 1. Scrapy crawler ingestion
 
 The crawler layer lives in `scrapers/`.
 
@@ -54,11 +64,60 @@ Scrapy writes to Neon only when:
 SCRAPY_WRITE_TO_NEON=1
 ```
 
+### 2. Provider text/file import
+
+Use `scripts/import_provider_text.py` for already-collected provider/location data that needs cleanup.
+
+Accepted input formats:
+
+```text
+.txt
+.csv
+.json
+.jsonl
+```
+
+The importer looks for provider-looking records and extracts:
+
+```text
+name
+address
+city
+state
+postalCode
+phone
+email
+website
+services
+sourceUrl
+lat/lng
+```
+
+It scores records for healthcare relevance and ignores obvious non-provider rows.
+
+Preview to cleaned CSV:
+
+```bash
+npm run import:providers -- data/raw-provider-dump.txt --out output/cleaned-providers.csv
+```
+
+Write cleaned rows into Neon:
+
+```bash
+SCRAPY_WRITE_TO_NEON=1 npm run import:providers -- data/raw-provider-dump.txt --write
+```
+
+For UCSD-style JSONL or other already-collected records:
+
+```bash
+SCRAPY_WRITE_TO_NEON=1 npm run import:providers -- data/records.jsonl --format jsonl --source-tag ucsd_google_local_subset --write
+```
+
 ## Required tables
 
 | Table | Purpose |
 |---|---|
-| `google_maps_raw_results` | Raw crawler/source evidence rows. Name is legacy, but still used as the raw table. |
+| `google_maps_raw_results` | Raw crawler/import source evidence rows. Name is legacy, but still used as the raw table. |
 | `provider_feeder_candidates` | Staging/dedupe rows. Not the final app output. |
 | `provider_candidates` | Final app-facing provider candidates. Inspected dynamically. |
 | `provider_feeder_jobs` | Legacy map-job table retained for compatibility/history. Not used by the current worker loop. |
@@ -85,7 +144,7 @@ SCRAPY_WRITE_TO_NEON=1
 | `VALIDATE_SCHEMA_ON_START` | `1` | Validate required feeder tables on startup. |
 | `ENABLE_APP_CANDIDATE_WRITE` | `1` | Upsert final app-facing rows into `APP_CANDIDATE_TABLE`. |
 | `APP_CANDIDATE_TABLE` | `provider_candidates` | Final app-facing provider table; inspected dynamically. |
-| `SCRAPY_WRITE_TO_NEON` | `0` | When set to `1`, Scrapy crawler rows are written into Neon. |
+| `SCRAPY_WRITE_TO_NEON` | `0` | When set to `1`, Python crawler/import rows are written into Neon. |
 | `DASHBOARD_SHOW_LEGACY` | `0` | Show legacy map jobs/errors in dashboard. |
 
 ## Commands
@@ -95,18 +154,8 @@ SCRAPY_WRITE_TO_NEON=1
 | `npm run worker` | Start the Render dashboard/health service. |
 | `npm run smoke` | Verify database connection and required feeder tables. |
 | `npm run crawl:clinic -- -a config=sources/my-source.json` | Run the config-driven Scrapy clinic directory crawler from `scrapers/`. |
+| `npm run import:providers -- <file>` | Clean/import provider-looking rows from txt/csv/json/jsonl files. |
 | `npm run check` | Syntax-check the Node files. |
-
-## Running a crawler
-
-From a shell with the repo checked out and `DATABASE_URL` set:
-
-```bash
-cd scrapers
-SCRAPY_WRITE_TO_NEON=1 scrapy crawl clinic_directory -a config=sources/my-source.json -O output/my-source.jsonl
-```
-
-The source config defines the target page and selectors. See `scrapers/README.md`.
 
 ## Deleted old path
 
@@ -124,5 +173,5 @@ scripts/seed-jobs.js
 The current repo direction is:
 
 ```text
-Render dashboard + Scrapy crawler ingestion + Neon final provider output
+Render dashboard + Scrapy crawler ingestion + provider file cleanup + Neon final provider output
 ```
