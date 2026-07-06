@@ -155,9 +155,10 @@ def row_to_values(row):
     lng = float(row["lng"]) if row.get("lng") not in (None, "") else None
     services = normalize_text(row.get("services"))
     category = services or "clinic directory"
-    source_tag = normalize_text(row.get("sourceTag")) or "scrapy_directory"
+    source_type = normalize_text(row.get("sourceType")) or "scrapy_directory"
+    source_tag = normalize_text(row.get("sourceTag")) or source_type
     raw = dict(row)
-    raw["source"] = "scrapy_directory"
+    raw["source"] = source_type
     raw["sourceTag"] = source_tag
     return {
         "name": name,
@@ -276,7 +277,7 @@ def upsert_app_candidate(cur, values):
     put_app_value(app, cols, ["longitude", "lng", "lon"], values["longitude"])
     put_app_value(app, cols, ["category", "provider_category", "primary_category", "service_line", "service_type"], values["category"])
     put_app_value(app, cols, ["dedupe_key", "external_key", "provider_key"], values["dedupe_key"])
-    put_app_value(app, cols, ["source", "data_source", "created_by"], "scrapy_directory")
+    put_app_value(app, cols, ["source", "data_source", "created_by"], values["raw"].get("source", "scrapy_directory"))
     put_app_value(app, cols, ["source_query", "query"], values["source_query"])
     put_app_value(app, cols, ["confidence_score", "confidence"], values["confidence_score"])
     put_app_value(app, cols, ["raw", "raw_data", "metadata"], json.dumps(values["raw"]))

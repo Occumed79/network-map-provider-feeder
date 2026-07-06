@@ -222,3 +222,82 @@ The current repo direction is:
 ```text
 Render dashboard + Scrapy crawler ingestion + provider file cleanup + government source manifest + Neon final provider output
 ```
+
+## Manual provider ingestion console
+
+The Render service is now the **Provider Ingestion Dashboard**. It is a manual ingestion console, not a scheduled scraper system. The expected workflow is always **preview first** and **write second**.
+
+Important tables:
+- `provider_candidates` is the final app-facing output.
+- `provider_feeder_candidates` is staging/dedupe only.
+- `google_maps_raw_results` stores raw/source evidence despite the legacy table name.
+- The old Bing/Google/Apple map/browser scraper is not present anymore.
+
+### A. Paste URL from the frontend
+
+1. Open the dashboard.
+2. In **Manual Provider Ingestion → Scrape / Discover from URL**, paste a provider directory, government health page, clinic locator, hospital list, facility registry, or similar URL.
+3. Click **Preview**.
+4. Download `accepted.csv`, `rejected.csv`, `report.json`, and any discovered links/logs.
+5. After review, click **Write to Neon** only when the accepted rows should be written.
+
+The generic URL spider tries JSON-LD/schema.org healthcare entities, visible text contact/location blocks, and relevant provider/facility/location links. It is intentionally a best-effort generic extractor, not a magic site-specific scraper.
+
+### B. Government health discovery
+
+1. In **Government Health Seeds**, choose **All**, **Part 1**, or **Part 2**.
+2. Optionally enter comma-separated countries.
+3. Click **Run discovery**.
+4. Download `discovered-links.csv` and use useful leads as future pasted URLs, configs, or imports.
+
+### C. Document/file URL
+
+1. In **Import Document/File URL**, paste a PDF, CSV, TXT, JSON, JSONL, or UCSD/Google Local-style file URL.
+2. Choose the source type: `pdf_provider_directory`, `provider_file_import`, or `google_local_jsonl_import`.
+3. Click **Preview**.
+4. Download accepted/rejected/report outputs.
+5. Click **Write to Neon** only after review.
+
+PDFs are never written directly. The flow is: PDF URL → `extract_medical_providers.py` → CSV → `import_provider_text.py` preview → optional write.
+
+### D. Raw text
+
+1. Paste messy provider text into **Paste Raw Text**.
+2. Click **Preview**.
+3. Review/download accepted and rejected rows.
+4. Write only after review.
+
+### E. CLI examples
+
+Scrapy directory write:
+
+```bash
+SCRAPY_WRITE_TO_NEON=1 npm run crawl:clinic -- -a config=sources/my-source.json
+```
+
+Government discovery:
+
+```bash
+cd scrapers
+scrapy crawl government_health_discovery -O output/gov-health-links.csv
+scrapy crawl government_health_discovery -a source_file=sources/government_health_sources_part2.csv -O output/gov-health-links-part2.csv
+```
+
+Google Local / UCSD-style file:
+
+```bash
+npm run import:providers -- Alabama.txt --source-type google_local_jsonl_import --source-tag ucsd_alabama --accepted-out output/alabama-accepted.csv --rejected-out output/alabama-rejected.csv --report-out output/alabama-report.json
+```
+
+After review:
+
+```bash
+SCRAPY_WRITE_TO_NEON=1 npm run import:providers -- Alabama.txt --source-type google_local_jsonl_import --source-tag ucsd_alabama --write
+```
+
+PDF:
+
+```bash
+npm run extract:pdf -- input.pdf output/providers.csv
+npm run import:providers -- output/providers.csv --source-type pdf_provider_directory --source-tag embassy_pdf --accepted-out output/pdf-accepted.csv --rejected-out output/pdf-rejected.csv --report-out output/pdf-report.json
+```
