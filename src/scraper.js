@@ -1,16 +1,15 @@
 import { logger } from "./logger.js";
 
-const MAP_SOURCE = (process.env.MAP_SOURCE || "bing").trim().toLowerCase();
+const MAP_SOURCES = (process.env.MAP_SOURCES || "bing,google,apple")
+  .split(",")
+  .map((source) => source.trim().toLowerCase())
+  .filter(Boolean);
 const MAP_HTTP_TIMEOUT_MS = parseInt(process.env.MAP_HTTP_TIMEOUT_MS || "30000", 10);
 const MAP_HTTP_USER_AGENT = process.env.MAP_HTTP_USER_AGENT ||
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
-const MAX_RESULTS_PER_JOB = parseInt(process.env.MAX_RESULTS_PER_JOB || "40", 10);
-const REQUEST_DELAY_MS = parseInt(process.env.MAP_HTTP_REQUEST_DELAY_MS || "750", 10);
-const ENABLE_SOURCE_FALLBACK = process.env.ENABLE_MAP_SOURCE_FALLBACK !== "0";
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const MAX_RESULTS_PER_JOB = parseInt(process.env.MAX_RESULTS_PER_JOB || "80", 10);
+const MAX_RESULTS_PER_SOURCE = parseInt(process.env.MAX_RESULTS_PER_SOURCE || "40", 10);
+const VALID_MAP_SOURCES = new Set(["bing", "google", "apple"]);
 
 function normalizeWhitespace(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -76,7 +75,7 @@ function buildBingMapsUrl(query, geo, radiusMeters) {
   const url = new URL("https://www.bing.com/maps");
   url.searchParams.set("q", query);
   url.searchParams.set("FORM", "HDRSC6");
-  url.searchParams.set("cp", geo?.lat != null && geo?.lng != null ? `${geo.lat}~${geo.lng}` : "");
+  if (geo?.lat != null && geo?.lng != null) url.searchParams.set("cp", `${geo.lat}~${geo.lng}`);
   if (radiusMeters) url.searchParams.set("lvl", "12");
   return url;
 }
@@ -271,12 +270,13 @@ function normalizeResults(results, { query, source }) {
       review_count: result.review_count || null,
       open_hours: result.open_hours || null,
       source_query: query,
+      source_score: scoreResult(result, query),
     }))
-    .filter((result) => scoreResult(result, query) >= 1)
-    .sort((a, b) => scoreResult(b, query) - scoreResult(a, query));
+    .filter((result) => result.source_score >= 1)
+    .sort((a, b) => b.source_score - a.source_score);
 
   return uniqBy(filtered, (result) => `${result.title}|${result.address || result.phone || result.website || result.place_id}`.toLowerCase())
-    .slice(0, MAX_RESULTS_PER_JOB);
+    .slice(0, MAX_RESULTS_PER_SOURCE);
 }
 
 async function scrapeSource(source, { query, geo, radiusMeters }) {
@@ -289,29 +289,83 @@ async function scrapeSource(source, { query, geo, radiusMeters }) {
   return results;
 }
 
-function sourceOrder() {
-  const requested = MAP_SOURCE === "google" || MAP_SOURCE === "apple" || MAP_SOURCE === "bing" ? MAP_SOURCE : "bing";
-  if (!ENABLE_SOURCE_FALLBACK) return [requested];
-  return [requested, ...["bing", "google", "apple"].filter((source) => source !== requested)];
+function enabledSources() {
+  const sources = MAP_SOURCES.filter((source) => VALID_MAP_SOURCES.has(source));
+  return sources.length ? [...new Set(sources)] : ["bing", "google", "apple"];
+}
+
+function mergeSourceResults(sourceResults, query) {
+  const combined = sourceResults.flatMap(({ source, results }) =>
+    results.map((result) => ({
+      ...result,
+      source_hits: [source],
+      parallel_sources: sourceResults.map((entry) => entry.source),
+    }))
+  );
+
+  const merged = new Map();
+  for (const result of combined) {
+    const key = `${result.title}|${result.address || result.phone || result.website || result.place_id}`.toLowerCase();
+    if (!key) continue;
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, result);
+      continue;
+    }
+
+    existing.source_hits = [...new Set([...(existing.source_hits || []), ...(result.source_hits || [])])];
+    existing.categories = [...new Set([...(existing.categories || []), ...(result.categories || [])].filter(Boolean))];
+    existing.phone = existing.phone || result.phone;
+    existing.website = existing.website || result.website;
+    existing.address = existing.address || result.address;
+    existing.latitude = existing.latitude ?? result.latitude;
+    existing.longitude = existing.longitude ?? result.longitude;
+    existing.source_score = Math.max(existing.source_score || 0, result.source_score || scoreResult(result, query));
+    existing.raw = {
+      ...existing.raw,
+      parallelMerge: true,
+      source_hits: existing.source_hits,
+    };
+  }
+
+  return [...merged.values()]
+    .sort((a, b) => (b.source_hits?.length || 0) - (a.source_hits?.length || 0) || (b.source_score || 0) - (a.source_score || 0))
+    .slice(0, MAX_RESULTS_PER_JOB);
 }
 
 export async function runScraper({ query, geo = null, radiusMeters = null }) {
+  const sources = enabledSources();
+  logger.info("Starting parallel mapped HTTP scrapers", { query, sources });
+
+  const settled = await Promise.allSettled(
+    sources.map(async (source) => ({
+      source,
+      results: await scrapeSource(source, { query, geo, radiusMeters }),
+    }))
+  );
+
+  const successes = [];
   const errors = [];
-  for (const source of sourceOrder()) {
-    try {
-      const results = await scrapeSource(source, { query, geo, radiusMeters });
-      if (results.length) {
-        logger.info("Mapped HTTP scraper completed", { query, source, resultCount: results.length });
-        return results;
-      }
-      errors.push(`${source}: no accepted mapped results`);
-    } catch (err) {
-      errors.push(`${source}: ${err.message}`);
-      logger.warn("Mapped source failed", { source, query, error: err.message });
+  for (const result of settled) {
+    if (result.status === "fulfilled") {
+      successes.push(result.value);
+    } else {
+      errors.push(result.reason?.message || String(result.reason));
     }
-    if (REQUEST_DELAY_MS > 0) await sleep(REQUEST_DELAY_MS);
   }
 
-  logger.warn("Mapped HTTP scraper returned no results", { query, errors });
-  return [];
+  const merged = mergeSourceResults(successes, query);
+  logger.info("Parallel mapped HTTP scrapers completed", {
+    query,
+    sources,
+    successfulSources: successes.map((entry) => entry.source),
+    errors,
+    resultCount: merged.length,
+  });
+
+  if (!merged.length && errors.length) {
+    logger.warn("Parallel mapped HTTP scrapers returned no results", { query, errors });
+  }
+
+  return merged;
 }
