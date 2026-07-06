@@ -27,7 +27,7 @@ services:
         value: "1"
       - key: WORKER_POLL_INTERVAL_MS
         value: "30000"
-      - key: AUTO_MIGRATE_ON_START
+      - key: VALIDATE_SCHEMA_ON_START
         value: "1"
       - key: AUTO_SEED_ON_START
         value: "1"
