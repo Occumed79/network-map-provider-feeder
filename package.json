@@ -8,6 +8,7 @@
     "worker": "node src/worker.js",
     "smoke": "node scripts/smoke.js",
     "crawl:clinic": "cd scrapers && scrapy crawl clinic_directory",
+    "discover:gov-health": "cd scrapers && scrapy crawl government_health_discovery",
     "import:providers": "python scripts/import_provider_text.py",
     "check": "node --check src/worker.js && node --check src/dashboard.js && node --check src/appCandidateWriter.js && node --check src/schema.js && node --check scripts/smoke.js"
   },
