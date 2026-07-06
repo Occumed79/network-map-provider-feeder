@@ -8,9 +8,10 @@
     "migrate": "node scripts/migrate.js",
     "seed": "node scripts/seed-jobs.js",
     "seed:targeted": "node scripts/seed-jobs.js",
-    "worker": "node src/worker.js",
+    "check:source-policy": "node scripts/check-source-policy.js",
+    "worker": "npm run check:source-policy && node src/worker.js",
     "smoke": "node scripts/smoke.js",
-    "check": "node --check src/worker.js && node --check src/scraper.js && node --check src/jobSeeder.js && node --check src/schema.js && node --check src/sourcePolicy.js && node --check scripts/migrate.js && node --check scripts/seed-jobs.js && node --check scripts/smoke.js"
+    "check": "node --check src/worker.js && node --check src/scraper.js && node --check src/jobSeeder.js && node --check src/schema.js && node --check src/sourcePolicy.js && node --check scripts/check-source-policy.js && node --check scripts/migrate.js && node --check scripts/seed-jobs.js && node --check scripts/smoke.js"
   },
   "dependencies": {
     "pg": "^8.13.1"
