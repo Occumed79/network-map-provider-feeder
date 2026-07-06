@@ -45,7 +45,7 @@ async function claimJobs(count) {
        SELECT id FROM provider_feeder_jobs
        WHERE status = 'pending' AND attempts < max_attempts
        ORDER BY priority DESC, created_at ASC
-       LIMIT $1
+       LIMIT $1::int
        FOR UPDATE SKIP LOCKED
      )
      RETURNING *`,
@@ -149,24 +149,24 @@ async function normalizeAndUpsertCandidates(client, jobId, job, rawRows) {
       address: r.address,
     });
 
-    const existing = await client.query("SELECT * FROM provider_feeder_candidates WHERE dedupe_key = $1", [dedupeKey]);
+    const existing = await client.query("SELECT * FROM provider_feeder_candidates WHERE dedupe_key = $1::text", [dedupeKey]);
     let candidateId;
 
     if (existing.rows.length) {
       candidateId = existing.rows[0].id;
       await client.query(
         `UPDATE provider_feeder_candidates
-         SET name = COALESCE(NULLIF($1,''), name),
-             normalized_name = COALESCE(NULLIF($2,''), normalized_name),
-             category = COALESCE($3, category),
-             address = COALESCE($4, address),
-             phone = COALESCE($5, phone),
-             website = COALESCE($6, website),
-             latitude = COALESCE($7, latitude),
-             longitude = COALESCE($8, longitude),
-             confidence_score = GREATEST(confidence_score, $9),
+         SET name = COALESCE(NULLIF($1::text,''), name),
+             normalized_name = COALESCE(NULLIF($2::text,''), normalized_name),
+             category = COALESCE($3::text, category),
+             address = COALESCE($4::text, address),
+             phone = COALESCE($5::text, phone),
+             website = COALESCE($6::text, website),
+             latitude = COALESCE($7::double precision, latitude),
+             longitude = COALESCE($8::double precision, longitude),
+             confidence_score = GREATEST(confidence_score, $9::double precision),
              updated_at = now()
-         WHERE id = $10`,
+         WHERE id = $10::bigint`,
         [name, normalizedName, r.category, r.address, phone, website, lat, lng, confidence, candidateId]
       );
     } else {
@@ -174,10 +174,10 @@ async function normalizeAndUpsertCandidates(client, jobId, job, rawRows) {
       if (lat != null && lng != null) {
         const nearby = await client.query(
           `SELECT * FROM provider_feeder_candidates
-           WHERE country_code = $1
+           WHERE country_code = $1::varchar
              AND latitude IS NOT NULL AND longitude IS NOT NULL
-             AND latitude BETWEEN $2 - 0.002 AND $2 + 0.002
-             AND longitude BETWEEN $3 - 0.002 AND $3 + 0.002`,
+             AND latitude BETWEEN $2::double precision - 0.002 AND $2::double precision + 0.002
+             AND longitude BETWEEN $3::double precision - 0.002 AND $3::double precision + 0.002`,
           [job.country_code, lat, lng]
         );
         nearbyMatch = nearby.rows.find((c) => isNearbyDuplicate({ title: name, latitude: lat, longitude: lng }, c));
@@ -187,8 +187,8 @@ async function normalizeAndUpsertCandidates(client, jobId, job, rawRows) {
         candidateId = nearbyMatch.id;
         await client.query(
           `UPDATE provider_feeder_candidates
-           SET confidence_score = GREATEST(confidence_score, $1), updated_at = now()
-           WHERE id = $2`,
+           SET confidence_score = GREATEST(confidence_score, $1::double precision), updated_at = now()
+           WHERE id = $2::bigint`,
           [confidence, candidateId]
         );
       } else {
@@ -196,7 +196,7 @@ async function normalizeAndUpsertCandidates(client, jobId, job, rawRows) {
           `INSERT INTO provider_feeder_candidates
             (name, normalized_name, country_code, category, address,
              phone, website, latitude, longitude, confidence_score, status, dedupe_key)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'new',$11)
+           VALUES ($1::text,$2::text,$3::varchar,$4::text,$5::text,$6::text,$7::text,$8::double precision,$9::double precision,$10::double precision,'new',$11::text)
            RETURNING id`,
           [name, normalizedName, job.country_code, r.category, r.address, phone, website, lat, lng, confidence, dedupeKey]
         );
@@ -207,7 +207,7 @@ async function normalizeAndUpsertCandidates(client, jobId, job, rawRows) {
 
     await client.query(
       `INSERT INTO provider_feeder_candidate_sources (candidate_id, raw_result_id, job_id)
-       VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+       VALUES ($1::bigint, $2::bigint, $3::bigint) ON CONFLICT DO NOTHING`,
       [candidateId, rawRow.id, jobId]
     );
   }
@@ -217,7 +217,7 @@ async function normalizeAndUpsertCandidates(client, jobId, job, rawRows) {
 async function processJob(job) {
   logger.info("Processing job", { jobId: job.id, query: job.query, attempt: job.attempts });
   const { rows: runRows } = await query(
-    `INSERT INTO provider_feeder_runs (job_id, status) VALUES ($1, 'running') RETURNING id`,
+    `INSERT INTO provider_feeder_runs (job_id, status) VALUES ($1::bigint, 'running') RETURNING id`,
     [job.id]
   );
   const runId = runRows[0].id;
@@ -238,27 +238,33 @@ async function processJob(job) {
       return { rawCount: rawRows.length, candidateCount };
     });
 
-    await query(`UPDATE provider_feeder_jobs SET status = 'completed', completed_at = now(), error = NULL WHERE id = $1`, [job.id]);
+    await query(`UPDATE provider_feeder_jobs SET status = 'completed', completed_at = now(), error = NULL WHERE id = $1::bigint`, [job.id]);
     await query(
       `UPDATE provider_feeder_runs
-       SET finished_at = now(), status = 'completed', raw_count = $1, candidate_count = $2
-       WHERE id = $3`,
+       SET finished_at = now(), status = 'completed', raw_count = $1::int, candidate_count = $2::int
+       WHERE id = $3::bigint`,
       [result.rawCount, result.candidateCount, runId]
     );
     logger.info("Job completed", { jobId: job.id, rawCount: result.rawCount, candidateCount: result.candidateCount });
   } catch (err) {
     logger.error("Job failed", { jobId: job.id, error: err.message });
     const shouldFail = job.attempts >= job.max_attempts;
+    const nextStatus = shouldFail ? "failed" : "pending";
     await query(
       `UPDATE provider_feeder_jobs
-       SET status = $1,
-           started_at = CASE WHEN $1 = 'pending' THEN NULL ELSE started_at END,
-           completed_at = $2,
-           error = $3
-       WHERE id = $4`,
-      [shouldFail ? "failed" : "pending", shouldFail ? new Date() : null, err.message, job.id]
+       SET status = $1::varchar,
+           started_at = CASE WHEN $1::varchar = 'pending' THEN NULL ELSE started_at END,
+           completed_at = $2::timestamptz,
+           error = $3::text
+       WHERE id = $4::bigint`,
+      [nextStatus, shouldFail ? new Date() : null, err.message, job.id]
     );
-    await query(`UPDATE provider_feeder_runs SET finished_at = now(), status = 'failed', error = $1 WHERE id = $2`, [err.message, runId]);
+    await query(
+      `UPDATE provider_feeder_runs
+       SET finished_at = now(), status = 'failed', error = $1::text
+       WHERE id = $2::bigint`,
+      [err.message, runId]
+    );
   }
 }
 
