@@ -1,230 +1,317 @@
-import { spawn } from "child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
-import { constants } from "fs";
-import { join } from "path";
-import { tmpdir } from "os";
 import { logger } from "./logger.js";
 
-const SCRAPER_IMAGE = process.env.SCRAPER_IMAGE || "gosom/google-maps-scraper";
-const SCRAPER_BINARY = process.env.SCRAPER_BINARY || "google-maps-scraper";
-const SCRAPER_MODE = (process.env.SCRAPER_MODE || "auto").toLowerCase();
-const SCRAPER_TIMEOUT_MS = parseInt(process.env.SCRAPER_TIMEOUT_MS || "300000", 10);
-const SCRAPER_EXIT_ON_INACTIVITY = process.env.SCRAPER_EXIT_ON_INACTIVITY || "3m";
-const SCRAPER_PROXIES = process.env.SCRAPER_PROXIES || "";
-const DISABLE_TELEMETRY = process.env.DISABLE_TELEMETRY === "1";
+const MAP_SOURCE = (process.env.MAP_SOURCE || "bing").trim().toLowerCase();
+const MAP_HTTP_TIMEOUT_MS = parseInt(process.env.MAP_HTTP_TIMEOUT_MS || "30000", 10);
+const MAP_HTTP_USER_AGENT = process.env.MAP_HTTP_USER_AGENT ||
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
+const MAX_RESULTS_PER_JOB = parseInt(process.env.MAX_RESULTS_PER_JOB || "40", 10);
+const REQUEST_DELAY_MS = parseInt(process.env.MAP_HTTP_REQUEST_DELAY_MS || "750", 10);
+const ENABLE_SOURCE_FALLBACK = process.env.ENABLE_MAP_SOURCE_FALLBACK !== "0";
 
-function buildScraperArgs({ inputFile, outputFile, depth, concurrency, geo, radiusMeters, fastMode }) {
-  const args = [
-    "-input", inputFile,
-    "-results", outputFile,
-    "-json",
-    "-depth", String(depth),
-    "-c", String(concurrency),
-    "-exit-on-inactivity", SCRAPER_EXIT_ON_INACTIVITY,
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeWhitespace(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function decodeHtml(value) {
+  return normalizeWhitespace(String(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\\u0026/g, "&")
+    .replace(/\\u003d/g, "=")
+    .replace(/\\u003c/g, "<")
+    .replace(/\\u003e/g, ">")
+    .replace(/\\"/g, '"'));
+}
+
+function cleanValue(value) {
+  const cleaned = decodeHtml(value)
+    .replace(/^https?:\/\/www\.bing\.com\/ck\/a\?!&&p=/i, "")
+    .replace(/^[|,;:\-\s]+|[|,;:\-\s]+$/g, "");
+  return cleaned || null;
+}
+
+function uniqBy(items, keyFn) {
+  const seen = new Set();
+  const out = [];
+  for (const item of items) {
+    const key = keyFn(item);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
+function parseLatLngFromChunk(chunk) {
+  const patterns = [
+    /"(?:latitude|lat|y)"\s*:\s*(-?\d+(?:\.\d+)?)[^{}]{0,180}"(?:longitude|lng|lon|x)"\s*:\s*(-?\d+(?:\.\d+)?)/i,
+    /"(?:longitude|lng|lon|x)"\s*:\s*(-?\d+(?:\.\d+)?)[^{}]{0,180}"(?:latitude|lat|y)"\s*:\s*(-?\d+(?:\.\d+)?)/i,
+    /\b(?:lat|latitude)[=:](-?\d+(?:\.\d+)?).*?\b(?:lng|lon|longitude)[=:](-?\d+(?:\.\d+)?)/i,
   ];
-
-  if (SCRAPER_PROXIES) args.push("-proxies", SCRAPER_PROXIES);
-  if (fastMode) args.push("-fast-mode");
-  if (geo?.lat != null && geo?.lng != null) args.push("-geo", `${geo.lat},${geo.lng}`);
-  if (radiusMeters) args.push("-radius", String(radiusMeters));
-  return args;
-}
-
-async function executableExists(command) {
-  if (command.includes("/")) {
-    try {
-      await access(command, constants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
+  for (let i = 0; i < patterns.length; i += 1) {
+    const match = chunk.match(patterns[i]);
+    if (!match) continue;
+    if (i === 1) return { latitude: Number(match[2]), longitude: Number(match[1]) };
+    return { latitude: Number(match[1]), longitude: Number(match[2]) };
   }
-
-  return new Promise((resolve) => {
-    const child = spawn("sh", ["-lc", `command -v ${JSON.stringify(command)} >/dev/null 2>&1`], { stdio: "ignore" });
-    child.on("close", (code) => resolve(code === 0));
-    child.on("error", () => resolve(false));
-  });
+  return { latitude: null, longitude: null };
 }
 
-function runCommand(command, args, { timeout, env = {}, label }) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      env: { ...process.env, ...env },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 5000).unref();
-      reject(new Error(`${label} timed out after ${timeout}ms`));
-    }, timeout);
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-      if (stdout.length > 1024 * 1024) stdout = stdout.slice(-1024 * 1024);
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-      if (stderr.length > 1024 * 1024) stderr = stderr.slice(-1024 * 1024);
-    });
-
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (stderr) logger.debug(`${label} stderr`, { stderr: stderr.slice(0, 1000) });
-      if (stdout) logger.debug(`${label} stdout`, { stdout: stdout.slice(0, 1000) });
-      if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`${label} exited with code ${code}: ${stderr.slice(0, 1000)}`));
-    });
-  });
-}
-
-async function parseResultFile(outputFile) {
-  let raw;
-  try {
-    raw = await readFile(outputFile, "utf8");
-  } catch {
-    logger.warn("No output file produced by scraper", { file: outputFile });
-    return [];
+function findFirst(chunk, patterns) {
+  for (const pattern of patterns) {
+    const match = chunk.match(pattern);
+    if (match?.[1]) return cleanValue(match[1]);
   }
+  return null;
+}
 
-  const trimmed = raw.trim();
-  if (!trimmed) return [];
+function buildBingMapsUrl(query, geo, radiusMeters) {
+  const url = new URL("https://www.bing.com/maps");
+  url.searchParams.set("q", query);
+  url.searchParams.set("FORM", "HDRSC6");
+  url.searchParams.set("cp", geo?.lat != null && geo?.lng != null ? `${geo.lat}~${geo.lng}` : "");
+  if (radiusMeters) url.searchParams.set("lvl", "12");
+  return url;
+}
 
+function buildGoogleMapsUrl(query, geo) {
+  const safeQuery = encodeURIComponent(query.replace(/\s+/g, " ").trim());
+  const center = geo?.lat != null && geo?.lng != null ? `/@${geo.lat},${geo.lng},12z` : "";
+  return new URL(`https://www.google.com/maps/search/${safeQuery}${center}?hl=en`);
+}
+
+function buildAppleMapsUrl(query, geo) {
+  const url = new URL("https://maps.apple.com/");
+  url.searchParams.set("q", query);
+  if (geo?.lat != null && geo?.lng != null) url.searchParams.set("ll", `${geo.lat},${geo.lng}`);
+  return url;
+}
+
+function buildSourceUrl(source, query, geo, radiusMeters) {
+  if (source === "google") return buildGoogleMapsUrl(query, geo);
+  if (source === "apple") return buildAppleMapsUrl(query, geo);
+  return buildBingMapsUrl(query, geo, radiusMeters);
+}
+
+async function fetchText(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), MAP_HTTP_TIMEOUT_MS);
   try {
-    const parsed = JSON.parse(trimmed);
-    return Array.isArray(parsed) ? parsed : [parsed];
-  } catch {
-    const rows = [];
-    for (const line of trimmed.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      try {
-        rows.push(JSON.parse(line));
-      } catch (err) {
-        logger.warn("Skipping malformed JSON scraper output line", { error: err.message });
-      }
-    }
-    return rows;
-  }
-}
-
-async function runBinaryScraper(opts, paths) {
-  const args = buildScraperArgs({
-    inputFile: paths.queryFile,
-    outputFile: paths.localOutFile,
-    depth: opts.depth,
-    concurrency: opts.concurrency,
-    geo: opts.geo,
-    radiusMeters: opts.radiusMeters,
-    fastMode: opts.fastMode,
-  });
-
-  logger.info("Starting scraper binary", {
-    query: opts.query,
-    binary: SCRAPER_BINARY,
-    depth: opts.depth,
-    concurrency: opts.concurrency,
-    timeout: opts.timeout,
-    fastMode: opts.fastMode,
-  });
-
-  await runCommand(SCRAPER_BINARY, args, {
-    timeout: opts.timeout,
-    env: DISABLE_TELEMETRY ? { DISABLE_TELEMETRY: "1" } : {},
-    label: "google-maps-scraper binary",
-  });
-}
-
-async function runDockerScraper(opts, paths) {
-  const args = [
-    "run", "--rm",
-    ...(DISABLE_TELEMETRY ? ["-e", "DISABLE_TELEMETRY=1"] : []),
-    "-v", `${paths.tmpDir}:/out`,
-    "-v", `${paths.queryFile}:/queries.txt:ro`,
-    SCRAPER_IMAGE,
-    ...buildScraperArgs({
-      inputFile: "/queries.txt",
-      outputFile: "/out/results.json",
-      depth: opts.depth,
-      concurrency: opts.concurrency,
-      geo: opts.geo,
-      radiusMeters: opts.radiusMeters,
-      fastMode: opts.fastMode,
-    }),
-  ];
-
-  logger.info("Starting scraper Docker image", {
-    query: opts.query,
-    image: SCRAPER_IMAGE,
-    depth: opts.depth,
-    concurrency: opts.concurrency,
-    timeout: opts.timeout,
-    fastMode: opts.fastMode,
-  });
-
-  await runCommand("docker", args, { timeout: opts.timeout, label: "google-maps-scraper docker" });
-}
-
-/**
- * Run gosom/google-maps-scraper for one controlled job.
- *
- * Modes:
- * - SCRAPER_MODE=binary: run an installed google-maps-scraper binary.
- * - SCRAPER_MODE=docker: run the gosom/google-maps-scraper Docker image.
- * - SCRAPER_MODE=auto: prefer binary, fall back to Docker if available.
- */
-export async function runScraper({
-  query,
-  depth = 1,
-  concurrency = 1,
-  timeout,
-  geo = null,
-  radiusMeters = null,
-  fastMode = false,
-}) {
-  const effectiveTimeout = timeout || SCRAPER_TIMEOUT_MS;
-  const tmpDir = await mkdtemp(join(tmpdir(), "provider-feeder-"));
-  const queryFile = join(tmpDir, "queries.txt");
-  const localOutFile = join(tmpDir, "results.json");
-
-  await mkdir(tmpDir, { recursive: true });
-  await writeFile(queryFile, `${query}\n`, "utf8");
-
-  const opts = { query, depth, concurrency, timeout: effectiveTimeout, geo, radiusMeters, fastMode };
-
-  try {
-    if (SCRAPER_MODE === "binary") {
-      await runBinaryScraper(opts, { tmpDir, queryFile, localOutFile });
-    } else if (SCRAPER_MODE === "docker") {
-      await runDockerScraper(opts, { tmpDir, queryFile, localOutFile });
-    } else {
-      const hasBinary = await executableExists(SCRAPER_BINARY);
-      if (hasBinary) {
-        await runBinaryScraper(opts, { tmpDir, queryFile, localOutFile });
-      } else {
-        const hasDocker = await executableExists("docker");
-        if (!hasDocker) {
-          throw new Error(`No scraper runtime found. Install ${SCRAPER_BINARY}, set SCRAPER_BINARY, or run with Docker available.`);
-        }
-        await runDockerScraper(opts, { tmpDir, queryFile, localOutFile });
-      }
-    }
-
-    const results = await parseResultFile(localOutFile);
-    logger.info("Scraper completed", { query, resultCount: results.length });
-    return results;
-  } catch (err) {
-    logger.error("Scraper process failed", { query, error: err.message });
-    throw new Error(`Scraper failed: ${err.message}`);
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "accept-language": "en-US,en;q=0.9",
+        "cache-control": "no-cache",
+        "user-agent": MAP_HTTP_USER_AGENT,
+      },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status} from ${url.hostname}`);
+    return await response.text();
   } finally {
-    await rm(tmpDir, { recursive: true, force: true });
+    clearTimeout(timer);
   }
+}
+
+function extractJsonLd(html, source) {
+  const rows = [];
+  const scriptRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = scriptRe.exec(html)) !== null) {
+    try {
+      const parsed = JSON.parse(decodeHtml(match[1]));
+      const candidates = Array.isArray(parsed) ? parsed : [parsed];
+      for (const candidate of candidates) {
+        const type = Array.isArray(candidate["@type"]) ? candidate["@type"].join(" ") : candidate["@type"];
+        if (!/LocalBusiness|MedicalBusiness|Organization|Place/i.test(type || "")) continue;
+        const address = typeof candidate.address === "string"
+          ? candidate.address
+          : [candidate.address?.streetAddress, candidate.address?.addressLocality, candidate.address?.addressRegion, candidate.address?.postalCode]
+              .filter(Boolean)
+              .join(", ");
+        rows.push({
+          title: cleanValue(candidate.name),
+          category: cleanValue(type) || `${source} Maps result`,
+          categories: [cleanValue(type) || `${source} Maps result`],
+          address: cleanValue(address),
+          phone: cleanValue(candidate.telephone),
+          website: cleanValue(candidate.url),
+          latitude: candidate.geo?.latitude != null ? Number(candidate.geo.latitude) : null,
+          longitude: candidate.geo?.longitude != null ? Number(candidate.geo.longitude) : null,
+          place_id: cleanValue(candidate["@id"] || candidate.url || candidate.name),
+          source,
+          raw: candidate,
+        });
+      }
+    } catch {
+      // ignore malformed embedded JSON-LD
+    }
+  }
+  return rows;
+}
+
+function chunkAroundMatches(html, needles) {
+  const chunks = [];
+  for (const needle of needles) {
+    const re = new RegExp(needle, "gi");
+    let match;
+    while ((match = re.exec(html)) !== null) {
+      const start = Math.max(0, match.index - 2500);
+      const end = Math.min(html.length, match.index + 3500);
+      chunks.push(html.slice(start, end));
+      if (chunks.length >= 250) return chunks;
+    }
+  }
+  return chunks;
+}
+
+function extractLooseMapResults(html, source) {
+  const chunks = chunkAroundMatches(html, [
+    "entityTitle",
+    "businessName",
+    "formattedAddress",
+    "PhoneNumber",
+    "phoneNumber",
+    "LocalBusiness",
+    "maps\/api\/place",
+    "place_id",
+    "cid",
+  ]);
+
+  const results = [];
+  for (const chunk of chunks) {
+    const title = findFirst(chunk, [
+      /"entityTitle"\s*:\s*"([^"]{2,160})"/i,
+      /"businessName"\s*:\s*"([^"]{2,160})"/i,
+      /"displayName"\s*:\s*"([^"]{2,160})"/i,
+      /"title"\s*:\s*"([^"]{2,160})"/i,
+      /"name"\s*:\s*"([^"]{2,160})"/i,
+      /aria-label="([^"]{2,160})"/i,
+    ]);
+    if (!title || /^(http|maps|directions|save|share|nearby|reviews?)$/i.test(title)) continue;
+
+    const address = findFirst(chunk, [
+      /"formattedAddress"\s*:\s*"([^"]{4,240})"/i,
+      /"address"\s*:\s*"([^"]{4,240})"/i,
+      /"AddressLine"\s*:\s*"([^"]{4,240})"/i,
+      /"streetAddress"\s*:\s*"([^"]{4,240})"/i,
+    ]);
+    const phone = findFirst(chunk, [
+      /"phoneNumber"\s*:\s*"([^"]{7,40})"/i,
+      /"PhoneNumber"\s*:\s*"([^"]{7,40})"/i,
+      /"telephone"\s*:\s*"([^"]{7,40})"/i,
+      /tel:([+\d\-().\s]{7,40})/i,
+    ]);
+    const website = findFirst(chunk, [
+      /"website"\s*:\s*"([^"]{8,300})"/i,
+      /"Website"\s*:\s*"([^"]{8,300})"/i,
+      /"url"\s*:\s*"(https?:\/\/[^"]{8,300})"/i,
+    ]);
+    const category = findFirst(chunk, [
+      /"category"\s*:\s*"([^"]{2,120})"/i,
+      /"primaryCategory"\s*:\s*"([^"]{2,120})"/i,
+      /"businessType"\s*:\s*"([^"]{2,120})"/i,
+    ]);
+    const placeId = findFirst(chunk, [
+      /"place_id"\s*:\s*"([^"]{4,180})"/i,
+      /"placeId"\s*:\s*"([^"]{4,180})"/i,
+      /"entityId"\s*:\s*"([^"]{4,180})"/i,
+      /"cid"\s*:\s*"?([\d-]{4,40})"?/i,
+    ]);
+    const coords = parseLatLngFromChunk(chunk);
+
+    results.push({
+      title,
+      category: category || `${source} Maps result`,
+      categories: [category || `${source} Maps result`],
+      address,
+      phone,
+      website,
+      latitude: coords.latitude,
+      longitude: coords.longitude,
+      place_id: placeId || `${source}:${title}:${address || ""}`,
+      source,
+      raw: { source, title, address, phone, website, category, placeId, extractedChunk: chunk.slice(0, 1200) },
+    });
+  }
+
+  return results;
+}
+
+function scoreResult(result, query) {
+  const q = query.toLowerCase();
+  const text = [result.title, result.category, result.address, result.website].filter(Boolean).join(" ").toLowerCase();
+  let score = 0;
+  for (const term of ["occupational", "clinic", "medical", "urgent", "health", "workers", "dot", "physical", "audiogram", "spirometry"]) {
+    if (q.includes(term) && text.includes(term)) score += 2;
+  }
+  if (result.phone) score += 1;
+  if (result.address) score += 2;
+  if (result.latitude != null && result.longitude != null) score += 2;
+  if (result.website) score += 1;
+  return score;
+}
+
+function normalizeResults(results, { query, source }) {
+  const filtered = results
+    .filter((result) => result.title)
+    .map((result) => ({
+      ...result,
+      source: `${source}_maps_http`,
+      google_place_id: result.place_id || null,
+      google_cid: result.google_cid || null,
+      review_rating: result.review_rating || null,
+      review_count: result.review_count || null,
+      open_hours: result.open_hours || null,
+      source_query: query,
+    }))
+    .filter((result) => scoreResult(result, query) >= 1)
+    .sort((a, b) => scoreResult(b, query) - scoreResult(a, query));
+
+  return uniqBy(filtered, (result) => `${result.title}|${result.address || result.phone || result.website || result.place_id}`.toLowerCase())
+    .slice(0, MAX_RESULTS_PER_JOB);
+}
+
+async function scrapeSource(source, { query, geo, radiusMeters }) {
+  const url = buildSourceUrl(source, query, geo, radiusMeters);
+  logger.info("Fetching mapped source", { source, query, url: url.toString() });
+  const html = await fetchText(url);
+  const rows = [...extractJsonLd(html, source), ...extractLooseMapResults(html, source)];
+  const results = normalizeResults(rows, { query, source });
+  logger.info("Mapped source parsed", { source, query, parsed: rows.length, accepted: results.length });
+  return results;
+}
+
+function sourceOrder() {
+  const requested = MAP_SOURCE === "google" || MAP_SOURCE === "apple" || MAP_SOURCE === "bing" ? MAP_SOURCE : "bing";
+  if (!ENABLE_SOURCE_FALLBACK) return [requested];
+  return [requested, ...["bing", "google", "apple"].filter((source) => source !== requested)];
+}
+
+export async function runScraper({ query, geo = null, radiusMeters = null }) {
+  const errors = [];
+  for (const source of sourceOrder()) {
+    try {
+      const results = await scrapeSource(source, { query, geo, radiusMeters });
+      if (results.length) {
+        logger.info("Mapped HTTP scraper completed", { query, source, resultCount: results.length });
+        return results;
+      }
+      errors.push(`${source}: no accepted mapped results`);
+    } catch (err) {
+      errors.push(`${source}: ${err.message}`);
+      logger.warn("Mapped source failed", { source, query, error: err.message });
+    }
+    if (REQUEST_DELAY_MS > 0) await sleep(REQUEST_DELAY_MS);
+  }
+
+  logger.warn("Mapped HTTP scraper returned no results", { query, errors });
+  return [];
 }
