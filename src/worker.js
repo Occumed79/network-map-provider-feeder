@@ -3,7 +3,7 @@ import { query, withTransaction, end } from "./db.js";
 import { handleDashboardRequest } from "./dashboard.js";
 import { runScraper } from "./scraper.js";
 import { logger } from "./logger.js";
-import { validateSchema } from "./schema.js";
+import { ensureFeederSchema, validateSchema } from "./schema.js";
 import { ensureQueueBacklog } from "./jobSeeder.js";
 import {
   normalizePhone,
@@ -19,6 +19,7 @@ import {
 const POLL_INTERVAL = parseInt(process.env.WORKER_POLL_INTERVAL_MS || "30000", 10);
 const MAX_JOBS_PER_LOOP = parseInt(process.env.MAX_JOBS_PER_LOOP || "1", 10);
 const DEFAULT_CONCURRENCY = parseInt(process.env.DEFAULT_CONCURRENCY || "1", 10);
+const ENABLE_SCHEMA_BOOTSTRAP = process.env.ENABLE_SCHEMA_BOOTSTRAP !== "0";
 const VALIDATE_SCHEMA_ON_START = process.env.VALIDATE_SCHEMA_ON_START !== "0";
 const AUTO_SEED_ON_START = process.env.AUTO_SEED_ON_START === "1";
 const MIN_PENDING_JOBS = parseInt(process.env.MIN_PENDING_JOBS || "25", 10);
@@ -29,9 +30,12 @@ const health = {
   startedAt: new Date().toISOString(),
   ready: false,
   status: "starting",
+  schemaReady: false,
+  queueSeeded: false,
   lastLoopAt: null,
   lastJobAt: null,
   lastJobId: null,
+  lastWarning: null,
   lastError: null,
 };
 
@@ -277,15 +281,23 @@ async function processJob(job) {
       return { rawCount: rawRows.length, candidateCount };
     });
 
+    const warning = result.rawCount === 0 ? "No mapped results returned; job completed without crashing" : null;
+    if (warning) {
+      health.lastWarning = warning;
+      logger.warn("Job completed with zero mapped results", { jobId: job.id, query: job.query });
+    } else {
+      health.lastWarning = null;
+    }
+
     await query(`UPDATE provider_feeder_jobs SET status = 'completed', completed_at = now(), error = NULL WHERE id = $1::bigint`, [job.id]);
     await query(
       `UPDATE provider_feeder_runs
-       SET finished_at = now(), status = 'completed', raw_count = $1::int, candidate_count = $2::int
+       SET finished_at = now(), status = 'completed', raw_count = $1::int, candidate_count = $2::int, error = $4::text
        WHERE id = $3::bigint`,
-      [result.rawCount, result.candidateCount, runId]
+      [result.rawCount, result.candidateCount, runId, warning]
     );
     health.lastError = null;
-    logger.info("Job completed", { jobId: job.id, rawCount: result.rawCount, candidateCount: result.candidateCount });
+    logger.info("Job completed", { jobId: job.id, rawCount: result.rawCount, candidateCount: result.candidateCount, warning });
   } catch (err) {
     logger.error("Job failed", { jobId: job.id, error: err.message });
     health.lastError = err.message;
@@ -311,8 +323,11 @@ async function processJob(job) {
 
 async function maybeSeedBacklog() {
   if (AUTO_SEED_ON_START) {
-    await ensureQueueBacklog({ minPending: MIN_PENDING_JOBS, maxSeedJobs: MAX_AUTO_SEED_JOBS });
+    const result = await ensureQueueBacklog({ minPending: MIN_PENDING_JOBS, maxSeedJobs: MAX_AUTO_SEED_JOBS });
+    health.queueSeeded = true;
+    return result;
   }
+  return { attempted: 0, inserted: 0 };
 }
 
 async function main() {
@@ -321,12 +336,16 @@ async function main() {
     pollInterval: POLL_INTERVAL,
     maxJobsPerLoop: MAX_JOBS_PER_LOOP,
     concurrency: DEFAULT_CONCURRENCY,
+    schemaBootstrap: ENABLE_SCHEMA_BOOTSTRAP,
     validateSchema: VALIDATE_SCHEMA_ON_START,
     autoSeed: AUTO_SEED_ON_START,
     dashboardServer: Boolean(healthServer),
   });
 
+  if (ENABLE_SCHEMA_BOOTSTRAP) await ensureFeederSchema();
   if (VALIDATE_SCHEMA_ON_START) await validateSchema();
+  health.schemaReady = true;
+
   await resetStaleRunningJobs();
   await maybeSeedBacklog();
   health.ready = true;
