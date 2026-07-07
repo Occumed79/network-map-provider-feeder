@@ -17,6 +17,9 @@ IGNORE_EXTENSIONS = (
     ".jpg", ".jpeg", ".png", ".gif", ".svg", ".css", ".js", ".ico", ".zip", ".rar",
 )
 
+TRUTHY = {"1", "true", "yes", "y", "on", "all"}
+DISABLED = {"0", "false", "no", "n", "off"}
+
 
 class GovernmentHealthDiscoverySpider(scrapy.Spider):
     name = "government_health_discovery"
@@ -27,7 +30,7 @@ class GovernmentHealthDiscoverySpider(scrapy.Spider):
         "CONCURRENT_REQUESTS": 6,
     }
 
-    def __init__(self, source_file="sources/government_health_sources.csv", countries="", max_depth="1", max_pages_per_country="20", *args, **kwargs):
+    def __init__(self, source_file="sources/government_health_sources.csv", countries="", max_depth="1", max_pages_per_country="20", include_disabled="1", *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.source_file = source_file
         source_files = ["sources/government_health_sources.csv", "sources/government_health_sources_part2.csv"] if source_file == "all" else [source_file]
@@ -40,21 +43,24 @@ class GovernmentHealthDiscoverySpider(scrapy.Spider):
                 raise ValueError(f"source_file not found: {p}")
             resolved_files.append(p)
         wanted = {c.strip().lower() for c in countries.split(",") if c.strip()}
+        include_disabled_sources = str(include_disabled).strip().lower() in TRUTHY
         self.max_depth = int(max_depth)
         self.max_pages_per_country = int(max_pages_per_country)
         self.page_counts = {}
         self.sources = []
+        skipped_disabled = 0
         for source_path in resolved_files:
             with source_path.open("r", encoding="utf-8-sig", newline="") as f:
                 for row in csv.DictReader(f):
                     country = (row.get("country") or "").strip()
                     url = (row.get("url") or "").strip()
                     enabled = str(row.get("enabled", "true")).strip().lower()
-                    if enabled in {"0", "false", "no"} and not wanted:
-                        continue
                     if not country or not url:
                         continue
                     if wanted and country.lower() not in wanted:
+                        continue
+                    if enabled in DISABLED and not include_disabled_sources and not wanted:
+                        skipped_disabled += 1
                         continue
                     self.sources.append({
                         "country": country,
@@ -64,8 +70,12 @@ class GovernmentHealthDiscoverySpider(scrapy.Spider):
                         "notes": (row.get("notes") or "").strip(),
                     })
         self.allowed_domains = sorted({urlparse(s["url"]).hostname or "" for s in self.sources if urlparse(s["url"]).hostname})
+        self.logger.info("Loaded %s government health seed sources from %s file(s); skipped_disabled=%s; include_disabled=%s; countries=%s", len(self.sources), len(resolved_files), skipped_disabled, include_disabled_sources, ",".join(sorted(wanted)) or "all")
 
     def start_requests(self):
+        if not self.sources:
+            self.logger.warning("No government health seed sources loaded. Check source_file, countries, and include_disabled settings.")
+            return
         for source in self.sources:
             yield scrapy.Request(
                 source["url"],
