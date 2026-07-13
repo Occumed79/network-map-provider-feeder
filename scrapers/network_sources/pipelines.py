@@ -1,3 +1,4 @@
+import hashlib
 import os
 
 from itemadapter import ItemAdapter
@@ -47,6 +48,15 @@ class CleanClinicLocationPipeline:
         )
         if not location_or_contact:
             raise DropItem(f"Missing provider location/contact evidence: {dict(adapter)}")
+
+        evidence_url = adapter.get("sourceUrl")
+        if evidence_url:
+            adapter["evidenceUrl"] = evidence_url
+        identity = "|".join(
+            str(adapter.get(field) or "").strip().lower()
+            for field in ("name", "address", "city", "region", "postalCode", "country", "phone", "website")
+        )
+        adapter["sourceUrl"] = f"provider-fingerprint://{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
         return item
 
 
