@@ -2,61 +2,84 @@ import hashlib
 import json
 import os
 import re
-from contextlib import contextmanager
 
 import psycopg2
 import psycopg2.extras
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 APP_TABLE = os.getenv("APP_CANDIDATE_TABLE", "provider_candidates")
+US_REGIONS = set("AL AK AZ AR CA CO CT DC DE FL GA HI IA ID IL IN KS KY LA MA MD ME MI MN MO MS MT NC ND NE NH NJ NM NV NY OH OK OR PA RI SC SD TN TX UT VA VT WA WI WV WY".split())
+COUNTRY_ALIASES = {
+    "united states": "US", "united states of america": "US", "usa": "US", "canada": "CA",
+    "mexico": "MX", "united kingdom": "GB", "uk": "GB", "australia": "AU", "new zealand": "NZ",
+    "ireland": "IE", "france": "FR", "germany": "DE", "italy": "IT", "spain": "ES",
+    "portugal": "PT", "netherlands": "NL", "belgium": "BE", "switzerland": "CH", "austria": "AT",
+    "norway": "NO", "sweden": "SE", "finland": "FI", "denmark": "DK", "poland": "PL",
+    "czech republic": "CZ", "czechia": "CZ", "romania": "RO", "greece": "GR", "turkey": "TR",
+    "israel": "IL", "lebanon": "LB", "jordan": "JO", "saudi arabia": "SA",
+    "united arab emirates": "AE", "uae": "AE", "qatar": "QA", "bahrain": "BH", "kuwait": "KW",
+    "oman": "OM", "egypt": "EG", "south africa": "ZA", "ghana": "GH", "nigeria": "NG",
+    "kenya": "KE", "ethiopia": "ET", "morocco": "MA", "india": "IN", "pakistan": "PK",
+    "bangladesh": "BD", "sri lanka": "LK", "china": "CN", "japan": "JP", "south korea": "KR",
+    "philippines": "PH", "singapore": "SG", "malaysia": "MY", "thailand": "TH", "vietnam": "VN",
+    "indonesia": "ID", "brazil": "BR", "argentina": "AR", "chile": "CL", "peru": "PE",
+    "colombia": "CO", "costa rica": "CR", "panama": "PA",
+}
 
 
-def normalize_text(value):
+def clean(value):
     return " ".join(str(value or "").replace("\xa0", " ").split()).strip()
-
-
-def normalize_phone(value):
-    digits = re.sub(r"\D+", "", str(value or ""))
-    if len(digits) == 11 and digits.startswith("1"):
-        digits = digits[1:]
-    return digits or None
-
-
-def normalize_site(value):
-    value = normalize_text(value)
-    if not value:
-        return None
-    if value.startswith("//"):
-        value = f"https:{value}"
-    if not re.match(r"^https?://", value, re.I):
-        value = f"https://{value}"
-    return value
 
 
 def normalized_name(value):
     return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
 
 
-def dedupe_key(row):
-    source_id = normalize_text(row.get("sourceUrl"))
-    phone = normalize_phone(row.get("phone"))
-    site = normalize_site(row.get("website"))
-    name = normalized_name(row.get("name"))
-    address = normalized_name(full_address(row))
-    lat = row.get("lat")
-    lng = row.get("lng")
-    base = source_id or phone or site or f"{name}|{address}" or f"{name}|{lat}|{lng}"
-    return hashlib.sha256(base.encode("utf-8")).hexdigest()
+def normalize_phone(value):
+    raw = clean(value)
+    if not raw:
+        return None
+    digits = re.sub(r"\D+", "", raw)
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    return digits or raw
+
+
+def normalize_site(value):
+    value = clean(value)
+    if not value:
+        return None
+    if value.startswith("//"):
+        value = f"https:{value}"
+    return value if re.match(r"^https?://", value, re.I) else f"https://{value}"
+
+
+def normalize_country(row):
+    code = clean(row.get("countryCode") or row.get("country_code"))
+    name = clean(row.get("country") or row.get("countryName"))
+    region = clean(row.get("region") or row.get("state") or row.get("province"))
+    if len(code) == 2 and code.isalpha():
+        return code.upper(), name or code.upper()
+    if name:
+        if len(name) == 2 and name.isalpha():
+            return name.upper(), name.upper()
+        return COUNTRY_ALIASES.get(name.lower(), "XX"), name
+    if region.upper() in US_REGIONS:
+        return "US", "United States"
+    return "XX", "Unknown"
 
 
 def full_address(row):
-    address = normalize_text(row.get("address"))
-    city = normalize_text(row.get("city"))
-    state = normalize_text(row.get("state"))
-    postal = normalize_text(row.get("postalCode"))
-    if address and city and state:
-        return ", ".join(part for part in [address, city, state, postal] if part)
-    return address or ", ".join(part for part in [city, state, postal] if part)
+    parts = [
+        clean(row.get("address")), clean(row.get("city")),
+        clean(row.get("region") or row.get("state") or row.get("province")),
+        clean(row.get("postalCode") or row.get("postal_code")), clean(row.get("country")),
+    ]
+    out = []
+    for part in parts:
+        if part and part.lower() not in {item.lower() for item in out}:
+            out.append(part)
+    return ", ".join(out)
 
 
 def q(identifier):
@@ -65,192 +88,139 @@ def q(identifier):
     return f'"{identifier}"'
 
 
-@contextmanager
-def connect():
+def open_connection():
     url = os.getenv("DATABASE_URL")
-    if not url:
-        yield None
-        return
-    conn = psycopg2.connect(url)
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    return psycopg2.connect(url) if url else None
 
 
-def table_exists(cur, table_name):
-    cur.execute("SELECT to_regclass(%s) AS regclass", (f"public.{table_name}",))
+def table_exists(cur, table):
+    cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
     return bool(cur.fetchone()[0])
 
 
-def table_columns(cur, table_name):
-    cur.execute(
-        "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=%s",
-        (table_name,),
-    )
+def table_columns(cur, table):
+    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=%s", (table,))
     return {row[0] for row in cur.fetchall()}
 
 
 def ensure_feeder_tables(cur):
-    cur.execute(
-        """
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS google_maps_raw_results (
-          id BIGSERIAL PRIMARY KEY,
-          job_id BIGINT,
-          query TEXT,
-          country_code VARCHAR(2) DEFAULT 'US',
-          title TEXT,
-          category TEXT,
-          categories JSONB,
-          address TEXT,
-          phone TEXT,
-          website TEXT,
-          latitude DOUBLE PRECISION,
-          longitude DOUBLE PRECISION,
-          google_place_id TEXT,
-          google_cid TEXT,
-          review_rating DOUBLE PRECISION,
-          review_count INTEGER,
-          open_hours JSONB,
-          raw JSONB,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-        """
-    )
-    cur.execute(
-        """
+          id BIGSERIAL PRIMARY KEY, job_id BIGINT, query TEXT, country_code VARCHAR(2) DEFAULT 'XX',
+          title TEXT, category TEXT, categories JSONB, address TEXT, phone TEXT, website TEXT,
+          latitude DOUBLE PRECISION, longitude DOUBLE PRECISION, google_place_id TEXT, google_cid TEXT,
+          review_rating DOUBLE PRECISION, review_count INTEGER, open_hours JSONB, raw JSONB,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now())
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS provider_feeder_candidates (
-          id BIGSERIAL PRIMARY KEY,
-          name TEXT NOT NULL,
-          normalized_name TEXT NOT NULL,
-          country_code VARCHAR(2) NOT NULL DEFAULT 'US',
-          category TEXT,
-          address TEXT,
-          phone TEXT,
-          website TEXT,
-          latitude DOUBLE PRECISION,
-          longitude DOUBLE PRECISION,
-          confidence_score DOUBLE PRECISION NOT NULL DEFAULT 0,
-          status VARCHAR(20) NOT NULL DEFAULT 'new',
-          dedupe_key TEXT NOT NULL,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-        """
-    )
-    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_feeder_candidates_dedupe ON provider_feeder_candidates (dedupe_key)")
-
-
-def row_to_values(row):
-    name = normalize_text(row.get("name"))
-    address = full_address(row)
-    phone = normalize_phone(row.get("phone"))
-    website = normalize_site(row.get("website"))
-    state = normalize_text(row.get("state")).upper()[:2] or "US"
-    lat = float(row["lat"]) if row.get("lat") not in (None, "") else None
-    lng = float(row["lng"]) if row.get("lng") not in (None, "") else None
-    services = normalize_text(row.get("services"))
-    category = services or "clinic directory"
-    source_type = normalize_text(row.get("sourceType")) or "scrapy_directory"
-    source_tag = normalize_text(row.get("sourceTag")) or source_type
-    raw = dict(row)
-    raw["source"] = source_type
-    raw["sourceTag"] = source_tag
-    return {
-        "name": name,
-        "normalized_name": normalized_name(name),
-        "country_code": "US",
-        "state": state,
-        "category": category,
-        "address": address,
-        "phone": phone,
-        "website": website,
-        "latitude": lat,
-        "longitude": lng,
-        "confidence_score": confidence_score(row),
-        "dedupe_key": dedupe_key(row),
-        "source_query": source_tag,
-        "raw": raw,
-    }
+          id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, normalized_name TEXT NOT NULL,
+          country_code VARCHAR(2) NOT NULL DEFAULT 'XX', country TEXT, city TEXT, region TEXT,
+          postal_code TEXT, category TEXT, address TEXT, phone TEXT, website TEXT,
+          latitude DOUBLE PRECISION, longitude DOUBLE PRECISION, confidence_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+          status VARCHAR(20) NOT NULL DEFAULT 'new', dedupe_key TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())
+    """)
+    for sql in (
+        "ALTER TABLE provider_feeder_candidates ADD COLUMN IF NOT EXISTS country TEXT",
+        "ALTER TABLE provider_feeder_candidates ADD COLUMN IF NOT EXISTS city TEXT",
+        "ALTER TABLE provider_feeder_candidates ADD COLUMN IF NOT EXISTS region TEXT",
+        "ALTER TABLE provider_feeder_candidates ADD COLUMN IF NOT EXISTS postal_code TEXT",
+    ):
+        cur.execute(sql)
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_feeder_candidates_dedupe ON provider_feeder_candidates(dedupe_key)")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS provider_feeder_crawl_runs (
+          run_key TEXT PRIMARY KEY, mode TEXT NOT NULL, start_url TEXT, status TEXT NOT NULL DEFAULT 'running',
+          config JSONB NOT NULL DEFAULT '{}'::jsonb, pages_crawled INTEGER NOT NULL DEFAULT 0,
+          providers_found INTEGER NOT NULL DEFAULT 0, providers_written INTEGER NOT NULL DEFAULT 0,
+          last_url TEXT, last_error TEXT, started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), completed_at TIMESTAMPTZ)
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS provider_feeder_crawl_pages (
+          run_key TEXT NOT NULL REFERENCES provider_feeder_crawl_runs(run_key) ON DELETE CASCADE,
+          url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', depth INTEGER NOT NULL DEFAULT 0,
+          parent_url TEXT, country TEXT, source_tag TEXT, providers_found INTEGER NOT NULL DEFAULT 0,
+          http_status INTEGER, last_error TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY(run_key,url))
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_crawl_pages_status ON provider_feeder_crawl_pages(run_key,status,depth,updated_at)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_crawl_runs_status ON provider_feeder_crawl_runs(status,updated_at DESC)")
 
 
 def confidence_score(row):
-    score = 0.35
-    if row.get("name"):
-        score += 0.15
-    if full_address(row):
-        score += 0.2
-    if row.get("phone"):
-        score += 0.1
-    if row.get("website") or row.get("sourceUrl"):
-        score += 0.1
-    if row.get("lat") and row.get("lng"):
-        score += 0.1
+    score = 0.30 + (0.20 if row.get("name") else 0) + (0.20 if full_address(row) else 0)
+    score += 0.10 if row.get("phone") or row.get("email") else 0
+    score += 0.10 if row.get("website") or row.get("sourceUrl") else 0
+    score += 0.10 if row.get("lat") and row.get("lng") else 0
     return min(score, 0.95)
 
 
-def insert_raw(cur, values):
-    cur.execute(
-        """
+def row_values(row):
+    country_code, country = normalize_country(row)
+    name = clean(row.get("name"))
+    address = full_address(row)
+    phone = normalize_phone(row.get("phone"))
+    website = normalize_site(row.get("website"))
+    city = clean(row.get("city"))
+    region = clean(row.get("region") or row.get("state") or row.get("province"))
+    postal = clean(row.get("postalCode") or row.get("postal_code"))
+    source_type = clean(row.get("sourceType")) or "scrapy_directory"
+    source_tag = clean(row.get("sourceTag")) or source_type
+    raw = dict(row)
+    raw.update(source=source_type, sourceTag=source_tag)
+    base = clean(row.get("sourceUrl")) or phone or website or f"{normalized_name(name)}|{normalized_name(address)}"
+    return {
+        "name": name, "normalized_name": normalized_name(name), "country_code": country_code,
+        "country": country, "city": city, "region": region, "postal_code": postal,
+        "category": clean(row.get("services")) or "healthcare provider", "address": address,
+        "phone": phone, "website": website,
+        "latitude": float(row["lat"]) if row.get("lat") not in (None, "") else None,
+        "longitude": float(row["lng"]) if row.get("lng") not in (None, "") else None,
+        "confidence_score": confidence_score(row), "dedupe_key": hashlib.sha256(base.encode()).hexdigest(),
+        "source_query": source_tag, "raw": raw, "crawl_run_key": clean(row.get("crawlRunKey")),
+    }
+
+
+def insert_raw(cur, v):
+    cur.execute("""
         INSERT INTO google_maps_raw_results
-          (query, country_code, title, category, categories, address, phone, website,
-           latitude, longitude, raw)
-        VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s::jsonb)
-        RETURNING id
-        """,
-        (
-            values["source_query"],
-            values["country_code"],
-            values["name"],
-            values["category"],
-            json.dumps([values["category"]]),
-            values["address"],
-            values["phone"],
-            values["website"],
-            values["latitude"],
-            values["longitude"],
-            json.dumps(values["raw"]),
-        ),
-    )
+          (query,country_code,title,category,categories,address,phone,website,latitude,longitude,raw)
+        VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s::jsonb) RETURNING id
+    """, (v["source_query"], v["country_code"], v["name"], v["category"], json.dumps([v["category"]]),
+          v["address"], v["phone"], v["website"], v["latitude"], v["longitude"], json.dumps(v["raw"])))
     return cur.fetchone()[0]
 
 
-def upsert_feeder_candidate(cur, values):
-    cur.execute("SELECT id FROM provider_feeder_candidates WHERE dedupe_key=%s", (values["dedupe_key"],))
-    existing = cur.fetchone()
-    if existing:
-        cur.execute(
-            """
-            UPDATE provider_feeder_candidates
-            SET address=COALESCE(address,%s), phone=COALESCE(phone,%s), website=COALESCE(website,%s),
-                latitude=COALESCE(latitude,%s), longitude=COALESCE(longitude,%s),
-                confidence_score=GREATEST(confidence_score,%s), updated_at=now()
+def upsert_staging(cur, v):
+    cur.execute("SELECT id FROM provider_feeder_candidates WHERE dedupe_key=%s", (v["dedupe_key"],))
+    row = cur.fetchone()
+    if row:
+        cur.execute("""
+            UPDATE provider_feeder_candidates SET
+              country_code=CASE WHEN country_code IN ('US','XX') AND %s<>'XX' THEN %s ELSE country_code END,
+              country=COALESCE(NULLIF(country,''),%s), city=COALESCE(NULLIF(city,''),%s),
+              region=COALESCE(NULLIF(region,''),%s), postal_code=COALESCE(NULLIF(postal_code,''),%s),
+              address=COALESCE(NULLIF(address,''),%s), phone=COALESCE(NULLIF(phone,''),%s),
+              website=COALESCE(NULLIF(website,''),%s), latitude=COALESCE(latitude,%s),
+              longitude=COALESCE(longitude,%s), confidence_score=GREATEST(confidence_score,%s), updated_at=now()
             WHERE id=%s
-            """,
-            (values["address"], values["phone"], values["website"], values["latitude"], values["longitude"], values["confidence_score"], existing[0]),
-        )
-        return existing[0]
-    cur.execute(
-        """
+        """, (v["country_code"], v["country_code"], v["country"], v["city"], v["region"], v["postal_code"],
+              v["address"], v["phone"], v["website"], v["latitude"], v["longitude"], v["confidence_score"], row[0]))
+        return row[0]
+    cur.execute("""
         INSERT INTO provider_feeder_candidates
-          (name, normalized_name, country_code, category, address, phone, website, latitude, longitude,
-           confidence_score, status, dedupe_key)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'new',%s)
-        RETURNING id
-        """,
-        (
-            values["name"], values["normalized_name"], values["country_code"], values["category"], values["address"],
-            values["phone"], values["website"], values["latitude"], values["longitude"], values["confidence_score"], values["dedupe_key"],
-        ),
-    )
+          (name,normalized_name,country_code,country,city,region,postal_code,category,address,phone,website,
+           latitude,longitude,confidence_score,status,dedupe_key)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'new',%s) RETURNING id
+    """, (v["name"], v["normalized_name"], v["country_code"], v["country"], v["city"], v["region"],
+          v["postal_code"], v["category"], v["address"], v["phone"], v["website"], v["latitude"],
+          v["longitude"], v["confidence_score"], v["dedupe_key"]))
     return cur.fetchone()[0]
 
 
-def put_app_value(out, cols, names, value):
+def put(out, cols, names, value):
     if value in (None, ""):
         return
     for name in names:
@@ -259,28 +229,30 @@ def put_app_value(out, cols, names, value):
             return
 
 
-def upsert_app_candidate(cur, values):
+def upsert_app(cur, v):
     if os.getenv("ENABLE_APP_CANDIDATE_WRITE", "1") != "1":
         return "disabled"
-    if not IDENTIFIER_RE.match(APP_TABLE):
-        return "invalid_table"
-    if not table_exists(cur, APP_TABLE):
+    if not IDENTIFIER_RE.match(APP_TABLE) or not table_exists(cur, APP_TABLE):
         return "missing_table"
     cols = table_columns(cur, APP_TABLE)
     app = {}
-    put_app_value(app, cols, ["name", "provider_name", "clinic_name", "title"], values["name"])
-    put_app_value(app, cols, ["normalized_name", "normalized_provider_name", "search_name"], values["normalized_name"])
-    put_app_value(app, cols, ["address", "full_address", "street_address"], values["address"])
-    put_app_value(app, cols, ["phone", "phone_number"], values["phone"])
-    put_app_value(app, cols, ["website", "url"], values["website"])
-    put_app_value(app, cols, ["latitude", "lat"], values["latitude"])
-    put_app_value(app, cols, ["longitude", "lng", "lon"], values["longitude"])
-    put_app_value(app, cols, ["category", "provider_category", "primary_category", "service_line", "service_type"], values["category"])
-    put_app_value(app, cols, ["dedupe_key", "external_key", "provider_key"], values["dedupe_key"])
-    put_app_value(app, cols, ["source", "data_source", "created_by"], values["raw"].get("source", "scrapy_directory"))
-    put_app_value(app, cols, ["source_query", "query"], values["source_query"])
-    put_app_value(app, cols, ["confidence_score", "confidence"], values["confidence_score"])
-    put_app_value(app, cols, ["raw", "raw_data", "metadata"], json.dumps(values["raw"]))
+    mappings = [
+        (["name", "provider_name", "clinic_name", "title"], v["name"]),
+        (["normalized_name", "normalized_provider_name", "search_name"], v["normalized_name"]),
+        (["address", "full_address", "street_address"], v["address"]), (["city", "locality"], v["city"]),
+        (["state", "region", "province", "administrative_area"], v["region"]),
+        (["postal_code", "postalCode", "zip", "zipcode"], v["postal_code"]),
+        (["country", "country_name"], v["country"]), (["country_code", "countryCode"], v["country_code"]),
+        (["phone", "phone_number"], v["phone"]), (["website", "url"], v["website"]),
+        (["latitude", "lat"], v["latitude"]), (["longitude", "lng", "lon"], v["longitude"]),
+        (["category", "provider_category", "primary_category", "service_line", "service_type"], v["category"]),
+        (["dedupe_key", "external_key", "provider_key"], v["dedupe_key"]),
+        (["source", "data_source", "created_by"], v["raw"].get("source")),
+        (["source_query", "query"], v["source_query"]), (["confidence_score", "confidence"], v["confidence_score"]),
+        (["raw", "raw_data", "metadata"], json.dumps(v["raw"])),
+    ]
+    for names, value in mappings:
+        put(app, cols, names, value)
     if "status" in cols:
         app["status"] = "new"
     if "created_at" in cols:
@@ -289,54 +261,149 @@ def upsert_app_candidate(cur, values):
         app["updated_at"] = "__NOW__"
     if not app:
         return "no_matching_columns"
-
-    match_col = next((c for c in ["dedupe_key", "external_key", "provider_key", "phone", "phone_number", "website", "url"] if c in app and c in cols), None)
-    table_sql = q(APP_TABLE)
-    if match_col:
-        cur.execute(f"SELECT {q('id') if 'id' in cols else '1'} FROM {table_sql} WHERE {q(match_col)}=%s LIMIT 1", (app[match_col],))
+    match = next((c for c in ("dedupe_key", "external_key", "provider_key", "phone", "phone_number", "website", "url") if c in app), None)
+    if match:
+        cur.execute(f"SELECT {q('id') if 'id' in cols else '1'} FROM {q(APP_TABLE)} WHERE {q(match)}=%s LIMIT 1", (app[match],))
         existing = cur.fetchone()
         if existing and "id" in cols:
-            updates = []
-            params = []
-            for col, val in app.items():
+            sets, params = [], []
+            for col, value in app.items():
                 if col in ("id", "created_at"):
                     continue
-                if val == "__NOW__":
-                    updates.append(f"{q(col)}=now()")
-                elif col in ("confidence_score", "confidence"):
-                    params.append(val)
-                    updates.append(f"{q(col)}=GREATEST(COALESCE({q(col)},0),%s)")
+                if value == "__NOW__":
+                    sets.append(f"{q(col)}=now()")
                 else:
-                    params.append(val)
-                    updates.append(f"{q(col)}=CASE WHEN {q(col)} IS NULL OR {q(col)}::text='' THEN %s ELSE {q(col)} END")
+                    params.append(value)
+                    if col in ("confidence_score", "confidence"):
+                        sets.append(f"{q(col)}=GREATEST(COALESCE({q(col)},0),%s)")
+                    else:
+                        sets.append(f"{q(col)}=CASE WHEN {q(col)} IS NULL OR {q(col)}::text='' THEN %s ELSE {q(col)} END")
             params.append(existing[0])
-            cur.execute(f"UPDATE {table_sql} SET {', '.join(updates)} WHERE {q('id')}=%s", params)
+            cur.execute(f"UPDATE {q(APP_TABLE)} SET {', '.join(sets)} WHERE {q('id')}=%s", params)
             return "updated"
-
-    columns = []
-    placeholders = []
-    params = []
-    for col, val in app.items():
-        columns.append(q(col))
-        if val == "__NOW__":
+    names, placeholders, params = [], [], []
+    for col, value in app.items():
+        names.append(q(col))
+        if value == "__NOW__":
             placeholders.append("now()")
         else:
+            params.append(value)
             placeholders.append("%s")
-            params.append(val)
-    cur.execute(f"INSERT INTO {table_sql} ({', '.join(columns)}) VALUES ({', '.join(placeholders)})", params)
+    cur.execute(f"INSERT INTO {q(APP_TABLE)} ({', '.join(names)}) VALUES ({', '.join(placeholders)})", params)
     return "inserted"
 
 
-def write_provider(row):
-    values = row_to_values(row)
-    if not values["name"]:
+def write_provider(row, conn=None, commit=None, ensure_schema=True):
+    v = row_values(row)
+    if not v["name"]:
         return {"status": "skipped", "reason": "missing_name"}
-    with connect() as conn:
-        if conn is None:
-            return {"status": "skipped", "reason": "DATABASE_URL_missing"}
+    own = conn is None
+    conn = conn or open_connection()
+    if conn is None:
+        return {"status": "skipped", "reason": "DATABASE_URL_missing"}
+    commit = own if commit is None else commit
+    try:
         with conn.cursor() as cur:
-            ensure_feeder_tables(cur)
-            raw_id = insert_raw(cur, values)
-            feeder_id = upsert_feeder_candidate(cur, values)
-            app_status = upsert_app_candidate(cur, values)
-            return {"status": "written", "raw_id": raw_id, "feeder_id": feeder_id, "app_status": app_status}
+            if ensure_schema:
+                ensure_feeder_tables(cur)
+            raw_id = insert_raw(cur, v)
+            feeder_id = upsert_staging(cur, v)
+            app_status = upsert_app(cur, v)
+            if v["crawl_run_key"] and app_status in {"inserted", "updated"}:
+                cur.execute("UPDATE provider_feeder_crawl_runs SET providers_written=providers_written+1,updated_at=now() WHERE run_key=%s", (v["crawl_run_key"],))
+        if commit:
+            conn.commit()
+        return {"status": "written", "raw_id": raw_id, "feeder_id": feeder_id, "app_status": app_status}
+    except Exception:
+        if commit:
+            conn.rollback()
+        raise
+    finally:
+        if own:
+            conn.close()
+
+
+class CrawlCheckpointStore:
+    def __init__(self):
+        self.conn = open_connection()
+        self.pending_writes = 0
+        if self.conn:
+            with self.conn.cursor() as cur:
+                ensure_feeder_tables(cur)
+            self.conn.commit()
+
+    def start_run(self, key, mode, start_url, config):
+        if not self.conn or not key:
+            return
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO provider_feeder_crawl_runs(run_key,mode,start_url,status,config,started_at,updated_at,completed_at,last_error)
+                VALUES (%s,%s,%s,'running',%s::jsonb,now(),now(),NULL,NULL)
+                ON CONFLICT(run_key) DO UPDATE SET status='running',config=EXCLUDED.config,updated_at=now(),completed_at=NULL,last_error=NULL
+            """, (key, mode, start_url, json.dumps(config or {})))
+        self.conn.commit()
+
+    def load(self, key, limit=20000):
+        if not self.conn or not key:
+            return {"processed": set(), "pending": []}
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT url,status,depth,parent_url,country,source_tag FROM provider_feeder_crawl_pages WHERE run_key=%s ORDER BY depth,updated_at LIMIT %s", (key, limit))
+            rows = list(cur.fetchall())
+        return {
+            "processed": {row["url"] for row in rows if row["status"] == "processed"},
+            "pending": [dict(row) for row in rows if row["status"] in {"pending", "failed", "processing"}],
+        }
+
+    def queue(self, key, url, depth=0, parent=None, country=None, tag=None):
+        if not key or not url:
+            return False
+        if not self.conn:
+            return True
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO provider_feeder_crawl_pages(run_key,url,status,depth,parent_url,country,source_tag,updated_at)
+                VALUES (%s,%s,'pending',%s,%s,%s,%s,now()) ON CONFLICT(run_key,url) DO NOTHING RETURNING url
+            """, (key, url, depth, parent, country, tag))
+            inserted = bool(cur.fetchone())
+        self.pending_writes += 1
+        if self.pending_writes >= 50:
+            self.flush()
+        return inserted
+
+    def flush(self):
+        if self.conn and self.pending_writes:
+            self.conn.commit()
+            self.pending_writes = 0
+
+    def mark(self, key, url, status, depth=0, found=0, http_status=None, error=None):
+        if not self.conn or not key or not url:
+            return
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                UPDATE provider_feeder_crawl_pages SET status=%s,depth=%s,providers_found=%s,http_status=%s,last_error=%s,updated_at=now()
+                WHERE run_key=%s AND url=%s
+            """, (status, depth, found, http_status, error, key, url))
+            if status == "processed":
+                cur.execute("UPDATE provider_feeder_crawl_runs SET pages_crawled=pages_crawled+1,providers_found=providers_found+%s,last_url=%s,updated_at=now() WHERE run_key=%s", (found, url, key))
+            elif error:
+                cur.execute("UPDATE provider_feeder_crawl_runs SET last_url=%s,last_error=%s,updated_at=now() WHERE run_key=%s", (url, str(error)[:1500], key))
+        self.conn.commit()
+        self.pending_writes = 0
+
+    def finish(self, key, status, error=None):
+        if not self.conn or not key:
+            return
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                UPDATE provider_feeder_crawl_runs SET status=%s,last_error=%s,updated_at=now(),
+                  completed_at=CASE WHEN %s='completed' THEN now() ELSE completed_at END WHERE run_key=%s
+            """, (status, error, status, key))
+        self.conn.commit()
+
+    def close(self):
+        if self.conn:
+            try:
+                self.conn.commit()
+            finally:
+                self.conn.close()
+                self.conn = None
