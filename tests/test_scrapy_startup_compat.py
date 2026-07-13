@@ -17,7 +17,6 @@ class ScrapyStartupCompatibilityTests(unittest.TestCase):
         spider = object.__new__(GovernmentHealthIngestSpider)
         spider.seed_sources = [{"url": "https://example.test", "country": "US", "source_tag": "test"}]
         spider.run_key = "test-run"
-        spider.logger = type("Logger", (), {"info": lambda *args, **kwargs: None})()
         spider.start_requests = lambda: iter(["request-1", "request-2"])
 
         async def collect():
