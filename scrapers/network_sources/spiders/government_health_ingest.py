@@ -95,3 +95,16 @@ class GovernmentHealthIngestSpider(BaseDeepProviderSpider):
             countries or "all",
             wanted_mode,
         )
+
+    async def start(self):
+        """Schedule legacy start_requests under Scrapy 2.13+ async startup."""
+        scheduled = 0
+        for request in self.start_requests():
+            scheduled += 1
+            yield request
+        self.logger.info(
+            "CRAWL_START scheduled=%s seeds=%s run_key=%s",
+            scheduled,
+            len(self.seed_sources),
+            self.run_key,
+        )
