@@ -1,18 +1,19 @@
 {
   "name": "network-map-provider-feeder",
   "version": "1.1.0",
-  "description": "Render dashboard and crawler-capable provider ingestion service.",
+  "description": "Manual long-run provider crawler and ingestion dashboard for Network Map.",
   "main": "src/worker.js",
   "type": "module",
   "scripts": {
     "worker": "node src/worker.js",
     "smoke": "node scripts/smoke.js",
     "crawl:clinic": "cd scrapers && scrapy crawl clinic_directory",
+    "crawl:url": "cd scrapers && scrapy crawl generic_provider_url",
+    "crawl:gov-health": "cd scrapers && scrapy crawl government_health_ingest",
     "import:providers": "python scripts/import_provider_text.py",
-    "check": "node --check src/worker.js && node --check src/dashboard.js && node --check src/manualRunner.js && node --check src/appCandidateWriter.js && node --check src/schema.js && node --check scripts/smoke.js && python -m py_compile scripts/import_provider_text.py scripts/extract_medical_providers.py scrapers/network_sources/db.py scrapers/network_sources/spiders/generic_provider_url.py scrapers/network_sources/spiders/government_health_discovery.py",
+    "check": "node --check src/worker.js && node --check src/dashboard.js && node --check src/manualRunner.js && node --check src/appCandidateWriter.js && node --check src/schema.js && node --check scripts/smoke.js && python -m py_compile scripts/import_provider_text.py scripts/extract_medical_providers.py scrapers/network_sources/db.py scrapers/network_sources/pipelines.py scrapers/network_sources/spiders/clinic_directory.py scrapers/network_sources/spiders/generic_provider_url.py scrapers/network_sources/spiders/government_health_discovery.py scrapers/network_sources/spiders/government_health_ingest.py",
     "extract:pdf": "python scripts/extract_medical_providers.py",
-    "test:imports": "python -m unittest discover -s tests",
-    "crawl:gov-health": "cd scrapers && scrapy crawl government_health_discovery"
+    "test:imports": "python -m unittest discover -s tests"
   },
   "dependencies": {
     "pg": "^8.13.1"

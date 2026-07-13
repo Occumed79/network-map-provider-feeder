@@ -11,7 +11,7 @@ const health = {
   startedAt: new Date().toISOString(),
   ready: false,
   status: "starting",
-  mode: "dashboard_and_scrapy_ingestion",
+  mode: "manual_long_run_provider_crawler",
   schemaReady: false,
   lastLoopAt: null,
   lastJobAt: null,
@@ -23,7 +23,6 @@ const health = {
 function startHealthServer() {
   const port = parseInt(process.env.PORT || "0", 10);
   if (!port) return null;
-
   const server = createServer(async (req, res) => {
     try {
       const result = await handleDashboardRequest(req, health);
@@ -31,11 +30,13 @@ function startHealthServer() {
       if (result.body && typeof result.body.pipe === "function") result.body.pipe(res);
       else res.end(result.body);
     } catch (err) {
-      res.writeHead(500, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.writeHead(500, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+      });
       res.end(JSON.stringify({ ok: false, error: err.message }));
     }
   });
-
   server.listen(port, "0.0.0.0", () => {
     logger.info("Dashboard server listening", { port });
   });
@@ -50,14 +51,12 @@ async function main() {
     validateSchema: VALIDATE_SCHEMA_ON_START,
     dashboardServer: Boolean(healthServer),
   });
-
   if (ENABLE_SCHEMA_BOOTSTRAP) await ensureFeederSchema();
   if (VALIDATE_SCHEMA_ON_START) await validateSchema();
-
   health.schemaReady = true;
   health.ready = true;
   health.status = "running";
-  health.lastWarning = "Legacy map scraper loop has been removed. Use Scrapy crawlers for provider ingestion.";
+  health.lastWarning = "Crawls start manually and automatically write accepted provider records to Neon while running.";
 
   let running = true;
   const shutdown = async () => {
@@ -69,7 +68,6 @@ async function main() {
     await end();
     logger.info("Dashboard service stopped.");
   };
-
   process.on("SIGINT", () => { void shutdown(); });
   process.on("SIGTERM", () => { void shutdown(); });
 }
