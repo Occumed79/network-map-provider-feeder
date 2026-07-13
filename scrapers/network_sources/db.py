@@ -229,58 +229,86 @@ def put(out, cols, names, value):
             return
 
 
+def build_app_values(cols, v):
+    app = {}
+    service_values = [v["category"]] if v.get("category") else []
+    mappings = [
+        (["name", "provider_name", "clinic_name", "title"], v["name"]),
+        (["normalized_name", "normalized_provider_name", "search_name"], v["normalized_name"]),
+        (["source_kind"], v["raw"].get("source") or "provider_feeder"),
+        (["source_label"], v["source_query"] or "Provider feeder"),
+        (["address", "full_address", "street_address"], v["address"]),
+        (["city", "locality"], v["city"]),
+        (["admin_area", "state", "region", "province", "administrative_area"], v["region"]),
+        (["postal_code", "postalCode", "zip", "zipcode"], v["postal_code"]),
+        (["country", "country_name"], v["country"]),
+        (["country_code", "countryCode"], v["country_code"]),
+        (["phone", "phone_number"], v["phone"]),
+        (["website", "url"], v["website"]),
+        (["source_url"], clean(v["raw"].get("sourceUrl"))),
+        (["latitude", "lat"], v["latitude"]),
+        (["longitude", "lng", "lon"], v["longitude"]),
+        (["clinic_type", "category", "provider_category", "primary_category", "service_line", "service_type"], v["category"]),
+        (["services"], service_values),
+        (["categories"], service_values),
+        (["dedupe_key", "external_key", "provider_key"], v["dedupe_key"]),
+        (["source", "data_source", "created_by"], v["raw"].get("source")),
+        (["source_query", "query"], v["source_query"]),
+        (["confidence_score", "confidence"], v["confidence_score"]),
+        (["raw_source_data", "raw", "raw_data", "metadata"], psycopg2.extras.Json(v["raw"])),
+    ]
+    for names, value in mappings:
+        put(app, cols, names, value)
+    if "status" in cols:
+        app["status"] = "candidate"
+    if "created_at" in cols:
+        app["created_at"] = "__NOW__"
+    if "updated_at" in cols:
+        app["updated_at"] = "__NOW__"
+    if "last_seen" in cols:
+        app["last_seen"] = "__NOW__"
+    return app
+
+
 def upsert_app(cur, v):
     if os.getenv("ENABLE_APP_CANDIDATE_WRITE", "1") != "1":
         return "disabled"
     if not IDENTIFIER_RE.match(APP_TABLE) or not table_exists(cur, APP_TABLE):
         return "missing_table"
     cols = table_columns(cur, APP_TABLE)
-    app = {}
-    mappings = [
-        (["name", "provider_name", "clinic_name", "title"], v["name"]),
-        (["normalized_name", "normalized_provider_name", "search_name"], v["normalized_name"]),
-        (["address", "full_address", "street_address"], v["address"]), (["city", "locality"], v["city"]),
-        (["state", "region", "province", "administrative_area"], v["region"]),
-        (["postal_code", "postalCode", "zip", "zipcode"], v["postal_code"]),
-        (["country", "country_name"], v["country"]), (["country_code", "countryCode"], v["country_code"]),
-        (["phone", "phone_number"], v["phone"]), (["website", "url"], v["website"]),
-        (["latitude", "lat"], v["latitude"]), (["longitude", "lng", "lon"], v["longitude"]),
-        (["category", "provider_category", "primary_category", "service_line", "service_type"], v["category"]),
-        (["dedupe_key", "external_key", "provider_key"], v["dedupe_key"]),
-        (["source", "data_source", "created_by"], v["raw"].get("source")),
-        (["source_query", "query"], v["source_query"]), (["confidence_score", "confidence"], v["confidence_score"]),
-        (["raw", "raw_data", "metadata"], json.dumps(v["raw"])),
-    ]
-    for names, value in mappings:
-        put(app, cols, names, value)
-    if "status" in cols:
-        app["status"] = "new"
-    if "created_at" in cols:
-        app["created_at"] = "__NOW__"
-    if "updated_at" in cols:
-        app["updated_at"] = "__NOW__"
+    app = build_app_values(cols, v)
     if not app:
         return "no_matching_columns"
-    match = next((c for c in ("dedupe_key", "external_key", "provider_key", "phone", "phone_number", "website", "url") if c in app), None)
-    if match:
+    existing = None
+    for match in ("dedupe_key", "external_key", "provider_key", "source_url", "phone", "phone_number", "website", "url"):
+        if match not in app:
+            continue
         cur.execute(f"SELECT {q('id') if 'id' in cols else '1'} FROM {q(APP_TABLE)} WHERE {q(match)}=%s LIMIT 1", (app[match],))
         existing = cur.fetchone()
-        if existing and "id" in cols:
-            sets, params = [], []
-            for col, value in app.items():
-                if col in ("id", "created_at"):
-                    continue
-                if value == "__NOW__":
-                    sets.append(f"{q(col)}=now()")
+        if existing:
+            break
+    if not existing and all(name in app and name in cols for name in ("normalized_name", "address")):
+        cur.execute(
+            f"SELECT {q('id') if 'id' in cols else '1'} FROM {q(APP_TABLE)} WHERE lower({q('normalized_name')})=lower(%s) AND lower({q('address')})=lower(%s) LIMIT 1",
+            (app["normalized_name"], app["address"]),
+        )
+        existing = cur.fetchone()
+    if existing and "id" in cols:
+        sets, params = [], []
+        for col, value in app.items():
+            if col in ("id", "created_at"):
+                continue
+            if value == "__NOW__":
+                sets.append(f"{q(col)}=now()")
+            else:
+                params.append(value)
+                if col in ("confidence_score", "confidence"):
+                    sets.append(f"{q(col)}=GREATEST(COALESCE({q(col)},0),%s)")
                 else:
-                    params.append(value)
-                    if col in ("confidence_score", "confidence"):
-                        sets.append(f"{q(col)}=GREATEST(COALESCE({q(col)},0),%s)")
-                    else:
-                        sets.append(f"{q(col)}=CASE WHEN {q(col)} IS NULL OR {q(col)}::text='' THEN %s ELSE {q(col)} END")
-            params.append(existing[0])
-            cur.execute(f"UPDATE {q(APP_TABLE)} SET {', '.join(sets)} WHERE {q('id')}=%s", params)
-            return "updated"
+                    sets.append(f"{q(col)}=CASE WHEN {q(col)} IS NULL OR {q(col)}::text='' THEN %s ELSE {q(col)} END")
+        params.append(existing[0])
+        cur.execute(f"UPDATE {q(APP_TABLE)} SET {', '.join(sets)} WHERE {q('id')}=%s", params)
+        return "updated"
     names, placeholders, params = [], [], []
     for col, value in app.items():
         names.append(q(col))
